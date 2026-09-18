@@ -1,0 +1,16 @@
+streamlit
+pymupdf
+python-pptx
+Pillow
+openpyxl
+pywin32; sys_platform == "win32"
+
+# Rendu de vérification (étape 4) et export PDF (étape 5) : PowerPoint (COM,
+# via pywin32 ci-dessus) est le moteur prioritaire. LibreOffice est un
+# moteur de secours OPTIONNEL — PAS un paquet pip, un logiciel à installer
+# à part (https://www.libreoffice.org/download/download/) si PowerPoint
+# n'est pas disponible ou pas activé sur le poste. Détecté automatiquement
+# via le PATH (`soffice` / `soffice.exe`) ou les emplacements d'installation
+# standards Windows/Linux/Mac (cf. core/render.py). Sans PowerPoint NI
+# LibreOffice, ces deux étapes restent indisponibles ; le reste du pipeline
+# (étapes 1 à 3) fonctionne normalement.

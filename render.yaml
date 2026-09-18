@@ -1,0 +1,20 @@
+# Blueprint Render — déploiement reproductible (cf. README, section
+# "Déploiement sur Render"). Connecter ce dépôt dans le dashboard Render
+# ("New +" -> "Blueprint") suffit à créer le service à partir de ce fichier.
+services:
+  - type: web
+    name: plan-validation-vertical
+    runtime: docker
+    plan: free
+    # Frankfurt : région la plus proche pour un usage France/Europe,
+    # disponible sur le palier gratuit (pas de restriction documentée par
+    # Render sur le choix de région selon le plan). À vérifier dans le
+    # dashboard au moment du déploiement si Render change cette politique.
+    region: frankfurt
+    envVars:
+      # Jamais commitée : Render demande sa valeur lors de la création du
+      # service à partir de ce Blueprint (sync: false), à saisir dans le
+      # dashboard (Environment). Voir README pour le comportement si elle
+      # n'est pas définie (accès libre, utile en dev local uniquement).
+      - key: APP_PASSWORD
+        sync: false
