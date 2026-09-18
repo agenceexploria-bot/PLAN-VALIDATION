@@ -4,6 +4,7 @@ python-pptx
 Pillow
 openpyxl
 pywin32; sys_platform == "win32"
+psutil; sys_platform == "win32"  # core/memlog.py : mesure mémoire sous Windows (dev), `resource` (stdlib) sur Linux/Render
 
 # Rendu de vérification (étape 4) et export PDF (étape 5) : PowerPoint (COM,
 # via pywin32 ci-dessus) est le moteur prioritaire. LibreOffice est un

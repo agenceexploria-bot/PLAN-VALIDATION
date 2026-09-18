@@ -45,9 +45,12 @@ def test_extraction_reelle_sur_pdf_dhya2(tmp_path):
     fichiers attendus."""
     resultats = extract.extraire_pdf(FIXTURE_PDF, tmp_path, pages_1based=[1, 2], dpi=150)
     assert set(resultats) == {1, 2}
-    assert (tmp_path / "page_1.png").exists()
     assert (tmp_path / "page_1_redacted.png").exists()
     assert (tmp_path / "page_1_words.json").exists()
+    # Le rendu brut séparé (page_1.png) a été retiré (optimisation mémoire,
+    # audit RAM Render) : inutilisé en aval, il ne doit plus être produit du
+    # tout — pas seulement absent par oubli.
+    assert not (tmp_path / "page_1.png").exists()
     # La cote composée ne doit pas apparaître comme "translatable" dans les
     # mots extraits (régression du bug ci-dessus, sur les vraies données).
     mots_dimension = [w for w in resultats[1]["words"] if "X1500" in w["text"] or "X1800" in w["text"]]

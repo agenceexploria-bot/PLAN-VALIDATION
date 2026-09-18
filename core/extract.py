@@ -162,9 +162,14 @@ def rendre_apercus(pdf_path: Path, dpi: int = 100):
 
 def extraire_page(doc, pno: int, out: Path, dpi: int = 300) -> dict:
     """Extraction complète d'UNE page retenue (étape 2) :
-      - page_N.png : rendu 300 dpi brut ;
-      - page_N_redacted.png : rendu rédigé (suffixes de cotes fusionnées et
-        libellés texte purs retirés, nombres jamais touchés) ;
+      - page_N_redacted.png : SEUL rendu 300 dpi produit — rédigé (suffixes
+        de cotes fusionnées et libellés texte purs retirés, nombres jamais
+        touchés). Le rendu brut séparé (page_N.png) a été retiré (bug audit
+        RAM Render, diagnostic memlog) : il n'était consommé nulle part en
+        aval (ni assemblage, ni UI) et doublait pour rien le rendu 300 dpi —
+        le plus coûteux en mémoire du pipeline (~50 Mo par pixmap RGB non
+        compressé pour une page A3). Aucune perte de fidélité : c'est
+        exactement la même image rédigée qui alimente le PPTX final.
       - page_N_words.json (retourné ici comme dict, écrit par l'appelant) ;
     Retourne le dict `words_data` correspondant à page_N_words.json.
     """
@@ -172,8 +177,6 @@ def extraire_page(doc, pno: int, out: Path, dpi: int = 300) -> dict:
     n = pno + 1
     scale = dpi / 72
     out.mkdir(parents=True, exist_ok=True)
-
-    page.get_pixmap(matrix=fitz.Matrix(scale, scale)).save(out / f"page_{n}.png")
 
     char_boxes = page_char_boxes(page)
     spans_dir = page_span_directions(page)
@@ -220,7 +223,12 @@ def extraire_page(doc, pno: int, out: Path, dpi: int = 300) -> dict:
             elif w["translatable"]:
                 page.add_redact_annot(fitz.Rect(w["bbox"]))
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-    page.get_pixmap(matrix=fitz.Matrix(scale, scale)).save(out / f"page_{n}_redacted.png")
+    # Libération explicite du pixmap dès l'écriture sur disque (bug audit RAM
+    # Render) : ~50 Mo par pixmap RGB non compressé pour une page A3 à 300
+    # dpi — jamais laissé référencé au-delà du .save() qui l'écrit.
+    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
+    pix.save(out / f"page_{n}_redacted.png")
+    pix = None
 
     return words_data
 
@@ -234,9 +242,15 @@ def est_pdf_scanne(words_data: dict) -> bool:
 
 def extraire_pdf(pdf_path: Path, out: Path, pages_1based, dpi: int = 300) -> dict:
     """Extraction de plusieurs pages retenues. `pages_1based` = liste de
-    numéros de page 1-based. Écrit page_N.png / page_N_redacted.png /
-    page_N_words.json dans `out`, et retourne {page: words_data}."""
+    numéros de page 1-based. Écrit page_N_redacted.png / page_N_words.json
+    dans `out`, et retourne {page: words_data}. Logge le pic mémoire après
+    CHAQUE page individuelle (pas seulement en fin de boucle) : permet de
+    voir directement, page par page — y compris dans les logs Render en
+    prod —, si la mémoire s'accumule au fil du traitement ou reste stable
+    (bug audit RAM Render, diagnostic memlog)."""
     import json
+
+    from . import memlog
 
     doc = fitz.open(pdf_path)
     resultats = {}
@@ -248,6 +262,7 @@ def extraire_pdf(pdf_path: Path, out: Path, pages_1based, dpi: int = 300) -> dic
                 encoding="utf-8",
             )
             resultats[n] = words_data
+            memlog.logger_etape(f"extraction page {n}")
     finally:
         doc.close()
     return resultats

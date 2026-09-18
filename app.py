@@ -22,7 +22,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from core import assemble, checklist as checklist_mod, cover, extract, render, translate, verify
+from core import assemble, checklist as checklist_mod, cover, extract, memlog, render, translate, verify
 
 st.set_page_config(page_title="Plan de validation Vertical", page_icon="🏗️", layout="wide")
 
@@ -252,6 +252,7 @@ def _traiter_pipeline():
     toutes_pages = sorted(set(pages_garde + pages_planches + pages_specs))
     with st.spinner("Extraction du PDF (rendu 300 dpi, cotes, rédaction)…"):
         words_par_page = extract.extraire_pdf(pdf_path, wd, toutes_pages, dpi=300)
+    memlog.logger_etape("extraction PDF")
 
     # PDF scanné (page sans couche texte exploitable) : aucune traduction ni
     # rédaction n'a pu s'appliquer sur ces pages — à signaler explicitement
@@ -298,6 +299,7 @@ def _traiter_pipeline():
     st.session_state.pages_ignorees = pages_ignorees
     st.session_state.pages_scannees = pages_scannees
     st.session_state.traite = True
+    memlog.logger_etape("traduction")
 
 
 def etape_3():
@@ -366,6 +368,7 @@ def etape_3():
             except ValueError as e:
                 st.error(f"Assemblage impossible : {e}")
                 st.stop()
+        memlog.logger_etape("assemblage PPTX")
         st.session_state.pptx_path = out_path
         st.session_state.specs_table = specs_table_final
         aller_a(4)
@@ -458,6 +461,7 @@ def etape_4():
                         st.session_state.render_engine = resultat["moteur"]
                     except RuntimeError as e:
                         st.error(str(e))
+                    memlog.logger_etape("rendu de vérification")
                 st.rerun()
         else:
             if st.session_state.render_engine == render.MOTEUR_POWERPOINT:
