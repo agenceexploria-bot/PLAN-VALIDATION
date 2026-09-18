@@ -65,6 +65,11 @@ ROLES = [
     "Ignorée (administrative fabricant)",
 ]
 
+# Bug audit RAM Render : un PDF fabricant énorme peut saturer la mémoire
+# bien avant l'étape 4 sans message clair — mieux vaut refuser tôt, avec
+# une explication, que planter plus loin sans traceback (cf. OOM constaté).
+LIMITE_PDF_MO = 50
+
 # ---------------------------------------------------------------------------
 # État de session
 # ---------------------------------------------------------------------------
@@ -135,6 +140,16 @@ def etape_1():
 
     fichier = st.file_uploader("Plan fabricant (PDF vectoriel, EN/IT/TR)", type=["pdf"])
     if fichier is None:
+        return
+
+    taille_mo = fichier.size / 1e6
+    if taille_mo > LIMITE_PDF_MO:
+        st.error(
+            f"Fichier trop volumineux ({taille_mo:.0f} Mo, limite {LIMITE_PDF_MO} Mo) : "
+            "un PDF fabricant aussi lourd risque de saturer la mémoire disponible "
+            "pendant le traitement, surtout sur le palier gratuit Render (512 Mo). "
+            "Compressez-le ou scindez-le avant de le déposer ici."
+        )
         return
 
     chemin_pdf = st.session_state.workdir / "plan_fabricant.pdf"
@@ -249,9 +264,26 @@ def _traiter_pipeline():
     pages_specs = [i + 1 for i, r in enumerate(roles) if r == ROLES[2]]
     pages_ignorees = [i + 1 for i, r in enumerate(roles) if r == ROLES[3]]
 
-    toutes_pages = sorted(set(pages_garde + pages_planches + pages_specs))
-    with st.spinner("Extraction du PDF (rendu 300 dpi, cotes, rédaction)…"):
-        words_par_page = extract.extraire_pdf(pdf_path, wd, toutes_pages, dpi=300)
+    # Résolution adaptée à l'usage de chaque image, pas 300 dpi partout
+    # (bug audit poids/mémoire) : les planches cotées gardent 300 dpi (seul
+    # endroit où la lisibilité des petites cotes compte) ; la page de garde
+    # (vue 3D, visuel produit sans cotation fine) se contente de 200 dpi ;
+    # les pages "specs" n'ont besoin d'AUCUNE image (seul leur texte
+    # alimente le tableau reconstruit — leur rendu n'est jamais embarqué).
+    DPI_GARDE = 200
+    DPI_PLANCHE = 300
+    with st.spinner("Extraction du PDF (cotes, rédaction)…"):
+        words_par_page = {}
+        if pages_garde:
+            words_par_page.update(extract.extraire_pdf(pdf_path, wd, pages_garde, dpi=DPI_GARDE))
+        if pages_planches:
+            words_par_page.update(extract.extraire_pdf(pdf_path, wd, pages_planches, dpi=DPI_PLANCHE))
+        if pages_specs:
+            # Rôles mutuellement exclusifs par page (cf. ROLES/selectbox) :
+            # pages_specs ne recoupe jamais pages_garde/pages_planches.
+            words_par_page.update(
+                extract.extraire_pdf(pdf_path, wd, pages_specs, generer_image=False)
+            )
     memlog.logger_etape("extraction PDF")
 
     # PDF scanné (page sans couche texte exploitable) : aucune traduction ni
@@ -285,7 +317,7 @@ def _traiter_pipeline():
         try:
             image_redigee = wd / f"page_{n}_redacted.png"
             crop_path = wd / "cover_3d_full.png"
-            info = cover.extraire_vue_3d(image_redigee, crop_path, words_data=words_par_page[n])
+            info = cover.extraire_vue_3d(image_redigee, crop_path, words_data=words_par_page[n], dpi=DPI_GARDE)
             view3d = {"image": "cover_3d_full.png", "image_page_w_pt": info["width_pt"], "callouts": []}
         except ValueError as e:
             st.warning(f"Vue 3D (page {n}) : {e} — elle sera omise de la page specs.")
@@ -300,6 +332,21 @@ def _traiter_pipeline():
     st.session_state.pages_scannees = pages_scannees
     st.session_state.traite = True
     memlog.logger_etape("traduction")
+
+
+def _nettoyer_fichiers_intermediaires():
+    """Supprime les PNG/JSON intermédiaires d'extraction (page_N_redacted.png,
+    page_N_words.json, cover_3d_full.png) une fois le PPTX assemblé : plus
+    jamais relus après ce point (le rendu de vérification n'ouvre que le
+    PPTX déjà assemblé ; le contrôle de cotes utilise
+    st.session_state.words_par_page déjà en mémoire, jamais les JSON sur
+    disque). Sans ça, ils s'accumuleraient sur le disque éphémère de Render
+    au fil des sessions (bug audit poids) — le PPTX/PDF final n'en dépend
+    plus une fois généré."""
+    wd = st.session_state.workdir
+    for motif in ("page_*_redacted.png", "page_*_words.json", "cover_3d_full.png"):
+        for f in wd.glob(motif):
+            f.unlink(missing_ok=True)
 
 
 def etape_3():
@@ -369,6 +416,7 @@ def etape_3():
                 st.error(f"Assemblage impossible : {e}")
                 st.stop()
         memlog.logger_etape("assemblage PPTX")
+        _nettoyer_fichiers_intermediaires()
         st.session_state.pptx_path = out_path
         st.session_state.specs_table = specs_table_final
         aller_a(4)

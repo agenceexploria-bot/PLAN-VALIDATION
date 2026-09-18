@@ -92,7 +92,12 @@ def extraire_vue_3d(image_path: Path, out: Path, words_data: dict = None,
     x0 = max(0, bb[0] - pad); y0 = max(0, bb[1] - pad)
     x1 = min(W, bb[2] + pad); y1 = min(H, bb[3] + pad)
     crop = im.crop((x0, y0, x1, y1))
-    crop.save(out)
+    # Palette FIXE (jamais adaptative) plutôt que RGB plein, même choix que
+    # les planches rédigées — cf. le commentaire détaillé dans
+    # core/extract.py::_sauver_png_optimise : la palette adaptative coûte
+    # ~100 Mo de RAM en plus par image à cette résolution (histogramme
+    # complet), annulant l'optimisation mémoire déjà faite par ailleurs.
+    crop.convert("P").save(out, optimize=True)
     return {
         "out": str(out),
         "bbox_pt": [round(v / s, 1) for v in bb],

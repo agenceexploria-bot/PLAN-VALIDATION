@@ -17,6 +17,31 @@ import re
 from pathlib import Path
 
 import fitz  # pymupdf
+from PIL import Image
+
+# PNG palette (planches rédigées, vue 3D) plutôt que RGB plein : un plan
+# technique n'utilise réellement qu'une poignée de teintes (noir/blanc/gris
+# + éventuels aplats de couleur d'accentuation) — vérifié à l'œil sur la
+# plus petite cote du fixture réel (bloc de tolérances ISO 2768) et sur un
+# aplat magenta avant de retenir ce choix (cf. audit de session). Aucune
+# perte visible sur ce type de contenu, contrairement au JPEG, testé et
+# écarté : plus LOURD qu'un PNG plein malgré la perte (le JPEG est optimisé
+# pour la photo, pas pour de grands aplats blancs et des traits nets).
+#
+# ⚠️ Palette FIXE (`Image.convert("P")`, sans `palette=Image.ADAPTIVE`),
+# jamais adaptative : mesuré à l'audit, la palette adaptative (comme
+# `FASTOCTREE`) analyse l'histogramme complet de l'image pour choisir ses
+# couleurs — ce calcul coûte ~100 Mo de RAM en plus par page à 300 dpi
+# (4961x3508 px), annulant l'optimisation mémoire déjà faite par ailleurs.
+# La palette fixe ne fait qu'une recherche de plus proche couleur (aucune
+# analyse globale) : gain de poids réel (~20 %) sans coût mémoire mesurable.
+def _sauver_png_optimise(pix, chemin: Path) -> None:
+    """Sauve un pixmap pymupdf en PNG palette (fixe, jamais adaptative —
+    cf. commentaire ci-dessus) plutôt qu'en RGB plein. Jamais de conversion
+    à perte (JPEG, écarté après test)."""
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    img = img.convert("P")
+    img.save(chemin, optimize=True)
 
 # Mot "à traduire" = contient des lettres et n'est pas un invariant
 INVARIANT = re.compile(
@@ -160,16 +185,21 @@ def rendre_apercus(pdf_path: Path, dpi: int = 100):
         doc.close()
 
 
-def extraire_page(doc, pno: int, out: Path, dpi: int = 300) -> dict:
+def extraire_page(doc, pno: int, out: Path, dpi: int = 300, generer_image: bool = True) -> dict:
     """Extraction complète d'UNE page retenue (étape 2) :
-      - page_N_redacted.png : SEUL rendu 300 dpi produit — rédigé (suffixes
-        de cotes fusionnées et libellés texte purs retirés, nombres jamais
-        touchés). Le rendu brut séparé (page_N.png) a été retiré (bug audit
-        RAM Render, diagnostic memlog) : il n'était consommé nulle part en
-        aval (ni assemblage, ni UI) et doublait pour rien le rendu 300 dpi —
-        le plus coûteux en mémoire du pipeline (~50 Mo par pixmap RGB non
-        compressé pour une page A3). Aucune perte de fidélité : c'est
-        exactement la même image rédigée qui alimente le PPTX final.
+      - page_N_redacted.png : SEUL rendu produit — rédigé (suffixes de cotes
+        fusionnées et libellés texte purs retirés, nombres jamais touchés),
+        en PNG palette FIXE (256 couleurs, jamais adaptative — cf.
+        `_sauver_png_optimise`) : un plan technique n'utilise réellement
+        qu'une poignée de teintes (noir/blanc/gris + éventuels aplats de
+        couleur), la palette réduit le poids sans perte visible (vérifié à l'œil sur la
+        plus petite cote du fixture réel avant d'appliquer ce choix — cf.
+        audit de session). Le rendu brut séparé (page_N.png) a été retiré
+        (bug audit RAM Render) : il n'était consommé nulle part en aval.
+        `generer_image=False` (pages « specs » : leur image n'est jamais
+        utilisée, seul le texte alimente le tableau reconstruit) saute
+        entièrement la rédaction ET le rendu — aucune raison de payer ce
+        coût mémoire/CPU pour une image qui ne sera jamais embarquée ;
       - page_N_words.json (retourné ici comme dict, écrit par l'appelant) ;
     Retourne le dict `words_data` correspondant à page_N_words.json.
     """
@@ -210,6 +240,9 @@ def extraire_page(doc, pno: int, out: Path, dpi: int = 300) -> dict:
         "words": words,
     }
 
+    if not generer_image:
+        return words_data
+
     # Rédaction (option 2 — cf. SKILL.md « Cotes fusionnées au texte ») :
     #  - libellé texte pur -> rédaction complète (bbox du mot) ;
     #  - cote fusionnée     -> on ne rédige QUE le suffixe (suffix_bbox) ;
@@ -225,9 +258,9 @@ def extraire_page(doc, pno: int, out: Path, dpi: int = 300) -> dict:
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
     # Libération explicite du pixmap dès l'écriture sur disque (bug audit RAM
     # Render) : ~50 Mo par pixmap RGB non compressé pour une page A3 à 300
-    # dpi — jamais laissé référencé au-delà du .save() qui l'écrit.
+    # dpi — jamais laissé référencé au-delà de la conversion/sauvegarde.
     pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
-    pix.save(out / f"page_{n}_redacted.png")
+    _sauver_png_optimise(pix, out / f"page_{n}_redacted.png")
     pix = None
 
     return words_data
@@ -240,10 +273,11 @@ def est_pdf_scanne(words_data: dict) -> bool:
     return not any(w["translatable"] for w in words_data["words"])
 
 
-def extraire_pdf(pdf_path: Path, out: Path, pages_1based, dpi: int = 300) -> dict:
+def extraire_pdf(pdf_path: Path, out: Path, pages_1based, dpi: int = 300, generer_image: bool = True) -> dict:
     """Extraction de plusieurs pages retenues. `pages_1based` = liste de
-    numéros de page 1-based. Écrit page_N_redacted.png / page_N_words.json
-    dans `out`, et retourne {page: words_data}. Logge le pic mémoire après
+    numéros de page 1-based. Écrit page_N_redacted.png (sauf si
+    `generer_image=False`, cf. `extraire_page`) / page_N_words.json dans
+    `out`, et retourne {page: words_data}. Logge le pic mémoire après
     CHAQUE page individuelle (pas seulement en fin de boucle) : permet de
     voir directement, page par page — y compris dans les logs Render en
     prod —, si la mémoire s'accumule au fil du traitement ou reste stable
@@ -256,7 +290,7 @@ def extraire_pdf(pdf_path: Path, out: Path, pages_1based, dpi: int = 300) -> dic
     resultats = {}
     try:
         for n in pages_1based:
-            words_data = extraire_page(doc, n - 1, out, dpi)
+            words_data = extraire_page(doc, n - 1, out, dpi, generer_image)
             (out / f"page_{n}_words.json").write_text(
                 json.dumps(words_data, ensure_ascii=False, indent=1),
                 encoding="utf-8",
