@@ -22,7 +22,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from core import assemble, checklist as checklist_mod, cover, extract, memlog, render, translate, verify
+from core import assemble, checklist as checklist_mod, cover, extract, memlog, nettoyage, render, translate, verify
 
 st.set_page_config(page_title="Plan de validation Vertical", page_icon="🏗️", layout="wide")
 
@@ -75,9 +75,15 @@ LIMITE_PDF_MO = 50
 # ---------------------------------------------------------------------------
 
 def _init_etat():
+    if "workdir" not in st.session_state:
+        # Nouvelle session : on purge d'abord les dossiers abandonnés (pas de
+        # hook de fin de session fiable dans Streamlit, cf. core/nettoyage.py).
+        # Le mkdtemp ne doit se faire qu'ici, pas dans `defaut` ci-dessous,
+        # évalué à chaque rerun : il créait un dossier vide par interaction.
+        nettoyage.purger_dossiers_perimes()
+        st.session_state["workdir"] = Path(tempfile.mkdtemp(prefix=nettoyage.PREFIXE))
     defaut = {
         "etape": 1,
-        "workdir": Path(tempfile.mkdtemp(prefix="plan_validation_")),
         "pdf_path": None,
         "apercus": None,
         "pages_sans_texte_apercu": [],
