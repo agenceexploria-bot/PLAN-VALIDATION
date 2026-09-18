@@ -14,34 +14,19 @@ Règles absolues respectées :
     ensuite pour l'ouvrir.
 """
 import re
+import threading
 from pathlib import Path
 
 import fitz  # pymupdf
-from PIL import Image
 
-# PNG palette (planches rédigées, vue 3D) plutôt que RGB plein : un plan
-# technique n'utilise réellement qu'une poignée de teintes (noir/blanc/gris
-# + éventuels aplats de couleur d'accentuation) — vérifié à l'œil sur la
-# plus petite cote du fixture réel (bloc de tolérances ISO 2768) et sur un
-# aplat magenta avant de retenir ce choix (cf. audit de session). Aucune
-# perte visible sur ce type de contenu, contrairement au JPEG, testé et
-# écarté : plus LOURD qu'un PNG plein malgré la perte (le JPEG est optimisé
-# pour la photo, pas pour de grands aplats blancs et des traits nets).
-#
-# ⚠️ Palette FIXE (`Image.convert("P")`, sans `palette=Image.ADAPTIVE`),
-# jamais adaptative : mesuré à l'audit, la palette adaptative (comme
-# `FASTOCTREE`) analyse l'histogramme complet de l'image pour choisir ses
-# couleurs — ce calcul coûte ~100 Mo de RAM en plus par page à 300 dpi
-# (4961x3508 px), annulant l'optimisation mémoire déjà faite par ailleurs.
-# La palette fixe ne fait qu'une recherche de plus proche couleur (aucune
-# analyse globale) : gain de poids réel (~20 %) sans coût mémoire mesurable.
-def _sauver_png_optimise(pix, chemin: Path) -> None:
-    """Sauve un pixmap pymupdf en PNG palette (fixe, jamais adaptative —
-    cf. commentaire ci-dessus) plutôt qu'en RGB plein. Jamais de conversion
-    à perte (JPEG, écarté après test)."""
-    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-    img = img.convert("P")
-    img.save(chemin, optimize=True)
+# Une seule extraction à la fois dans le processus (palier Render : 512 Mo).
+# Le pic mémoire vient du rendu pleine page (~100 Mo par page A3 à 300 dpi) :
+# deux sessions qui extraient en même temps additionnent leurs pics (constaté
+# en prod : pages loguées deux fois, pic 543 Mo, OOM). Streamlit laisse en plus
+# finir le thread d'une session abandonnée (rechargement, second onglet) jusqu'à
+# son prochain appel d'interface. Vit dans ce module (importé une seule fois
+# par processus) et non dans app.py, ré-exécuté à chaque rerun.
+VERROU_EXTRACTION = threading.Lock()
 
 # Mot "à traduire" = contient des lettres et n'est pas un invariant
 INVARIANT = re.compile(
@@ -189,12 +174,11 @@ def extraire_page(doc, pno: int, out: Path, dpi: int = 300, generer_image: bool 
     """Extraction complète d'UNE page retenue (étape 2) :
       - page_N_redacted.png : SEUL rendu produit — rédigé (suffixes de cotes
         fusionnées et libellés texte purs retirés, nombres jamais touchés),
-        en PNG palette FIXE (256 couleurs, jamais adaptative — cf.
-        `_sauver_png_optimise`) : un plan technique n'utilise réellement
-        qu'une poignée de teintes (noir/blanc/gris + éventuels aplats de
-        couleur), la palette réduit le poids sans perte visible (vérifié à l'œil sur la
-        plus petite cote du fixture réel avant d'appliquer ce choix — cf.
-        audit de session). Le rendu brut séparé (page_N.png) a été retiré
+        en PNG direct (pas de palette) : la conversion en palette coûtait
+        ~+69 Mo de pic mémoire par planche A3 à 300 dpi (+176 Mo contre +107
+        Mo mesurés) pour un PPTX ~30 % plus léger — mesuré en prod Render :
+        pic à 543 Mo, OOM sur le palier 512 Mo. La mémoire prime sur le poids.
+        Le rendu brut séparé (page_N.png) a été retiré
         (bug audit RAM Render) : il n'était consommé nulle part en aval.
         `generer_image=False` (pages « specs » : leur image n'est jamais
         utilisée, seul le texte alimente le tableau reconstruit) saute
@@ -258,9 +242,9 @@ def extraire_page(doc, pno: int, out: Path, dpi: int = 300, generer_image: bool 
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
     # Libération explicite du pixmap dès l'écriture sur disque (bug audit RAM
     # Render) : ~50 Mo par pixmap RGB non compressé pour une page A3 à 300
-    # dpi — jamais laissé référencé au-delà de la conversion/sauvegarde.
+    # dpi — jamais laissé référencé au-delà du .save() qui l'écrit.
     pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
-    _sauver_png_optimise(pix, out / f"page_{n}_redacted.png")
+    pix.save(out / f"page_{n}_redacted.png")
     pix = None
 
     return words_data
@@ -286,17 +270,18 @@ def extraire_pdf(pdf_path: Path, out: Path, pages_1based, dpi: int = 300, genere
 
     from . import memlog
 
-    doc = fitz.open(pdf_path)
-    resultats = {}
-    try:
-        for n in pages_1based:
-            words_data = extraire_page(doc, n - 1, out, dpi, generer_image)
-            (out / f"page_{n}_words.json").write_text(
-                json.dumps(words_data, ensure_ascii=False, indent=1),
-                encoding="utf-8",
-            )
-            resultats[n] = words_data
-            memlog.logger_etape(f"extraction page {n}")
-    finally:
-        doc.close()
+    with VERROU_EXTRACTION:
+        doc = fitz.open(pdf_path)
+        resultats = {}
+        try:
+            for n in pages_1based:
+                words_data = extraire_page(doc, n - 1, out, dpi, generer_image)
+                (out / f"page_{n}_words.json").write_text(
+                    json.dumps(words_data, ensure_ascii=False, indent=1),
+                    encoding="utf-8",
+                )
+                resultats[n] = words_data
+                memlog.logger_etape(f"extraction page {n}")
+        finally:
+            doc.close()
     return resultats

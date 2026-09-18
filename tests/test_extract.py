@@ -84,3 +84,50 @@ def test_est_pdf_scanne_reellement_branche_sur_extraction(tmp_path):
 
     resultats = extract.extraire_pdf(pdf_path, tmp_path, pages_1based=[1], dpi=100)
     assert extract.est_pdf_scanne(resultats[1]) is True
+
+
+@pytest.mark.skipif(not FIXTURE_PDF.exists(), reason="fixture PDF absente")
+def test_rendu_planche_en_png_direct_pas_en_palette(tmp_path):
+    """Les rendus pleine page restent en PNG RGB direct : la conversion en
+    palette coûtait ~+69 Mo de pic mémoire par planche A3 à 300 dpi (OOM
+    constaté sur Render, palier 512 Mo). Ne pas la réintroduire ici sans
+    remesurer le pic mémoire."""
+    from PIL import Image
+
+    extract.extraire_pdf(FIXTURE_PDF, tmp_path, [2], dpi=100)
+    with Image.open(tmp_path / "page_2_redacted.png") as im:
+        assert im.mode == "RGB"
+
+
+def test_une_seule_extraction_a_la_fois_entre_sessions(monkeypatch, tmp_path):
+    """Deux sessions qui extraient en parallèle additionnaient leurs pics
+    mémoire (pages loguées deux fois en prod, puis OOM) : le verrou global
+    doit sérialiser les extractions, quel que soit le nombre de threads."""
+    import threading
+    import time
+
+    actifs, pic = [0], [0]
+    garde = threading.Lock()
+
+    def page_factice(doc, pno, out, dpi, generer_image):
+        with garde:
+            actifs[0] += 1
+            pic[0] = max(pic[0], actifs[0])
+        time.sleep(0.05)
+        with garde:
+            actifs[0] -= 1
+        return {"page": pno + 1, "words": []}
+
+    monkeypatch.setattr(extract, "extraire_page", page_factice)
+    monkeypatch.setattr(extract.fitz, "open", lambda _p: type("D", (), {"close": lambda self: None})())
+
+    threads = [
+        threading.Thread(target=extract.extraire_pdf, args=(Path("x.pdf"), tmp_path, [1, 2, 3]))
+        for _ in range(3)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert pic[0] == 1
