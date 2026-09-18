@@ -301,9 +301,9 @@ def _traiter_pipeline():
 
     planches = []
     for n in pages_planches:
-        labels, hg = translate.traduire_labels_planche(words_par_page[n])
+        planche, hg = translate.construire_planche(n, words_par_page[n])
         hors_glossaire_total += hg
-        planches.append({"image": f"page_{n}_redacted.png", "page_n": n, "labels": labels})
+        planches.append(planche)
 
     specs_table = []
     for n in pages_specs:

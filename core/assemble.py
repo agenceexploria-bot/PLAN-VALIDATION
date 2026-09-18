@@ -454,8 +454,13 @@ def assembler(proj: dict) -> Path:
                 sh._element.getparent().remove(sh._element)
         purger_cartouche(s, meta)
         geom = fit_picture(s, wd / planche["image"], Cm(0.6), Cm(2.3), W - Cm(1.2), Cm(15.3))
+        # Largeur RÉELLE de la page source (points PDF) : les bbox des étiquettes
+        # sont dans son repère, `add_overlay` en déduit l'échelle points -> EMU.
+        # La constante A3 (PAGE_W_PT) n'est qu'un repli : sur tout autre format
+        # (A2, A1…) elle tassait toutes les étiquettes dans un coin de la planche.
+        page_w = planche.get("page_w_pt", PAGE_W_PT)
         for lab in planche.get("labels", []):
-            add_overlay(s, lab["text"], lab["bbox"], geom,
+            add_overlay(s, lab["text"], lab["bbox"], geom, page_w=page_w,
                         vertical=lab.get("vertical", False), fpt=lab.get("fpt", 8),
                         fit_bbox=lab.get("fit_bbox", False), opaque=lab.get("opaque", False))
 

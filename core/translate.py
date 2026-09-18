@@ -70,6 +70,21 @@ def _construire_lignes(words):
     return [lignes[cle] for cle in sorted(lignes)]
 
 
+def construire_planche(n: int, words_data: dict):
+    """Entrée `planches[]` de `assemble.assembler` pour la page `n` : image
+    rédigée, étiquettes FR et LARGEUR RÉELLE de la page source en points PDF
+    (`page_w_pt`). Les bbox des étiquettes sont dans le repère de cette page :
+    sans sa largeur, `assemble.add_overlay` retomberait sur la constante A3 et
+    positionnerait mal les étiquettes sur tout autre format. Retourne
+    (planche, termes_hors_glossaire)."""
+    labels, hors_glossaire = traduire_labels_planche(words_data)
+    planche = {
+        "image": f"page_{n}_redacted.png", "page_n": n, "labels": labels,
+        "page_w_pt": words_data["page_size_pts"][0],
+    }
+    return planche, hors_glossaire
+
+
 def traduire_labels_planche(words_data: dict, secours=None):
     """Construit les étiquettes FR à superposer sur une planche dessin
     (étape 3c), à partir de page_N_words.json (core.extract.extraire_page).
