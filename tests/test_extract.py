@@ -34,7 +34,9 @@ def test_fragment_cote_isole_jamais_traduisible():
 def test_vraie_cote_fusionnee_reste_detectee():
     """Ne pas sur-corriger : une VRAIE cote fusionnée à un suffixe texte
     (ex. '9700(FFL)') doit toujours être reconnue comme telle."""
-    assert extract.is_translatable("9700(FFL)") is True
+    # B2 : le MOT « 9700(FFL) » contient un chiffre, il n'est donc jamais
+    # effacé en entier ; seul son suffixe est traitable (via `fused_number`).
+    assert extract.is_translatable("9700(FFL)") is False
     assert extract.fused_number("9700(FFL)") == "9700"
 
 
@@ -109,7 +111,7 @@ def test_une_seule_extraction_a_la_fois_entre_sessions(monkeypatch, tmp_path):
     actifs, pic = [0], [0]
     garde = threading.Lock()
 
-    def page_factice(doc, pno, out, dpi, generer_image):
+    def page_factice(doc, pno, out, dpi, generer_image, rediger=True):
         with garde:
             actifs[0] += 1
             pic[0] = max(pic[0], actifs[0])

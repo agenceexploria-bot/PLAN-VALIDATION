@@ -86,7 +86,22 @@ def controle_cotes(words_par_page: dict, pptx_path: Path, checklist_path: Path =
     src = nombres_source(words_par_page)
     deck = nombres_deck(pptx_path)
     n_ecarts = len(set(src) - set(deck)) + len(set(deck) - set(src))
-    if pages_scannees:
+
+    # Survie des nombres à la rédaction (calculée à l'extraction, cf.
+    # core.extract.extraire_page) : un nombre effacé de l'image est un ÉCHEC
+    # bloquant, jamais un simple écart à arbitrer.
+    survie_pages = {n: wd["survie_nombres"] for n, wd in words_par_page.items() if wd.get("survie_nombres")}
+    perdus = {n: sv["perdus"] for n, sv in survie_pages.items() if sv["perdus"]}
+    survie = {
+        "statut": "ÉCHEC" if perdus else "PASS",
+        "total": sum(sv["total"] for sv in survie_pages.values()),
+        "pages": sorted(survie_pages),
+        "perdus": {n: v for n, v in sorted(perdus.items())},
+    } if survie_pages else None
+
+    if perdus:
+        statut_cotes = "ÉCHEC (nombre(s) effacé(s) de l'image)"
+    elif pages_scannees:
         statut_cotes = "NON VÉRIFIABLE (PDF scanné)"
     elif n_ecarts == 0:
         statut_cotes = "PASS"
@@ -96,6 +111,7 @@ def controle_cotes(words_par_page: dict, pptx_path: Path, checklist_path: Path =
         "source_absents_du_deck": sorted(set(src) - set(deck)),
         "deck_absents_de_la_source": sorted(set(deck) - set(src)),
         "checklist": None,
+        "survie_nombres": survie,
         "pages_scannees": sorted(pages_scannees or []),
         "statut_cotes": statut_cotes,
         "nota": (
@@ -187,6 +203,20 @@ def controle_completude(pptx_path: Path, meta: dict, rubriques_specs: dict = Non
                             f"(« {meta.get('client', '')} »)."
                         )
 
+    # Aucun bloc de specs d'un ancien projet ne doit subsister (repérage par
+    # contenu, comme au montage — cf. assemble.est_bloc_specs) : filet de
+    # sécurité si un gabarit change de structure.
+    from . import assemble
+
+    for i, slide in enumerate(prs.slides):
+        for sh in assemble.shapes_texte(slide.shapes):
+            if assemble.est_bloc_specs(sh.text_frame.text):
+                debut = " ".join(sh.text_frame.text.split())[:60]
+                alertes.append(
+                    f"Slide {i + 1} — bloc de spécifications d'un ancien projet "
+                    f"non retiré (« {debut}… »)."
+                )
+
     slide_garde = prs.slides[0]
     texte_garde = " ".join(
         sh.text_frame.text for sh in slide_garde.shapes if sh.has_text_frame
@@ -237,6 +267,20 @@ def construire_rapport(nom_fichier: str, rapport_cotes: dict, alertes_completude
         f"3. Complétude   : {'PASS' if not alertes_completude else f'{len(alertes_completude)} manque(s)'}",
         "",
     ]
+    sv = rapport_cotes.get("survie_nombres")
+    if sv:
+        if sv["statut"] == "PASS":
+            lignes.append(
+                f"   Survie des nombres après rédaction : PASS ({sv['total']} valeur(s) "
+                f"relue(s) sur {len(sv['pages'])} page(s) — aucune effacée de l'image)"
+            )
+        else:
+            detail = " ; ".join(f"page {n} : {', '.join(v)}" for n, v in sv["perdus"].items())
+            lignes.append(
+                f"   Survie des nombres après rédaction : ÉCHEC — valeur(s) effacée(s) de "
+                f"l'image ({detail}). BLOQUANT : l'assemblage ne doit pas être livré."
+            )
+        lignes.append("")
     if rapport_cotes.get("pages_scannees"):
         pages_str = ", ".join(str(p) for p in rapport_cotes["pages_scannees"])
         lignes.append(

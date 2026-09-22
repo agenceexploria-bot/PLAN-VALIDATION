@@ -51,8 +51,11 @@ def test_cote_fusionnee_ne_reecrit_jamais_le_nombre():
     """Le nombre d'une cote fusionnée ne doit jamais apparaître dans le texte
     de l'étiquette générée — seul le suffixe est traduit (règle absolue n°2)."""
     words_data = {"words": [{
-        "text": "9700(FFL)", "bbox": [0, 0, 10, 10], "translatable": True,
-        "num": "9700", "suffix_en": "(FFL)", "suffix_bbox": [8, 0, 10, 10],
+        # (PIT) -> (fosse) : traduction différente, donc posée. Avec (FFL), dont
+        # la traduction est identique à la source, il n'y a plus d'étiquette du
+        # tout (B1 : on ne réécrit jamais un mot à l'identique).
+        "text": "9700(PIT)", "bbox": [0, 0, 10, 10], "translatable": True,
+        "num": "9700", "suffix_en": "(PIT)", "suffix_bbox": [8, 0, 10, 10],
         "rotation_deg": 0, "block_no": 0, "line_no": 0, "word_no": 0,
     }]}
     labels, _ = translate.traduire_labels_planche(words_data)
@@ -74,3 +77,26 @@ def test_completer_champs_commerciaux_idempotent():
     table, ajouts = translate.completer_champs_commerciaux([("Tension de commande", "24 V")])
     assert table.count(("Tension de commande", "24 V")) == 1
     assert "Tension de commande" not in ajouts
+
+
+def test_traduction_identique_ne_pose_aucune_etiquette():
+    """(FFL) -> (FFL) : ré-écrire le suffixe à l'identique détruirait l'original
+    pour rien. Ni effacement ni étiquette."""
+    words_data = {"words": [{
+        "text": "9700(FFL)", "bbox": [0, 0, 10, 10], "translatable": True,
+        "num": "9700", "suffix_en": "(FFL)", "suffix_bbox": [8, 0, 10, 10],
+        "rotation_deg": 0, "block_no": 0, "line_no": 0, "word_no": 0,
+    }]}
+    labels, hors_glossaire = translate.traduire_labels_planche(words_data)
+    assert labels == [] and hors_glossaire == []
+
+
+def test_mot_hors_glossaire_signale_mais_jamais_pose():
+    words_data = {"words": [{
+        "text": "BOYUTLARI", "bbox": [0, 0, 10, 10], "translatable": True,
+        "num": None, "suffix_bbox": None, "rotation_deg": 0,
+        "block_no": 0, "line_no": 0, "word_no": 0,
+    }]}
+    labels, hors_glossaire = translate.traduire_labels_planche(words_data)
+    assert labels == []
+    assert [h["source"] for h in hors_glossaire] == ["BOYUTLARI"]

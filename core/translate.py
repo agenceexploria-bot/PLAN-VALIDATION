@@ -53,6 +53,13 @@ def traduire_suffixe(suffixe_en: str, secours=None) -> dict:
 MAX_NGRAM = 6
 
 
+def _identique(traduction: str, source: str) -> bool:
+    """Traduction identique à la source (casse et parenthèses ignorées) : elle
+    n'apporte rien à l'écran. Ré-écrire le mot par-dessus lui-même détruirait
+    l'original pour rien (B1)."""
+    return traduction.strip("() ").casefold() == source.strip("() ").casefold()
+
+
 def _bbox_englobante(bboxes):
     xs0 = [b[0] for b in bboxes]; ys0 = [b[1] for b in bboxes]
     xs1 = [b[2] for b in bboxes]; ys1 = [b[3] for b in bboxes]
@@ -102,6 +109,13 @@ def traduire_labels_planche(words_data: dict, secours=None):
     `rotation_deg` (0/90/270), calculée en amont depuis la direction
     d'écriture du PDF — jamais estimée à l'œil.
 
+    Règle B1 — un mot traduit = un effacement + une pose : ne sortent en
+    `labels` QUE les mots réellement remplacés par un texte différent, et ce
+    sont exactement les zones que `core.extract` rédige dans l'image (même
+    fonction, mêmes bbox). Un mot hors glossaire, ou dont la traduction est
+    identique à la source, n'est NI rédigé NI réétiqueté : il reste tel quel
+    dans l'image ; le hors-glossaire est seulement signalé au rapport.
+
     Retourne (labels, termes_hors_glossaire).
     """
     words = words_data["words"]
@@ -116,13 +130,19 @@ def traduire_labels_planche(words_data: dict, secours=None):
             if w["num"]:
                 if w["suffix_bbox"]:
                     res = traduire_suffixe(w["suffix_en"], secours)
-                    labels.append({
-                        "text": res["traduction"], "bbox": w["suffix_bbox"],
-                        "vertical": w["rotation_deg"] in (90, 270),
-                        "source": res["source"], "statut": res["statut"],
-                    })
                     if res["statut"] == "hors_glossaire":
                         hors_glossaire.append(res)
+                    elif not _identique(res["traduction"], res["source"]):
+                        labels.append({
+                            "text": res["traduction"], "bbox": w["suffix_bbox"],
+                            "vertical": w["rotation_deg"] in (90, 270),
+                            "rotation_deg": w["rotation_deg"],
+                            # Le suffixe vient APRÈS le nombre : l'étiquette part
+                            # du début du suffixe et s'éloigne du nombre (le FR,
+                            # souvent plus long, ne doit pas le recouvrir).
+                            "ancre": "debut",
+                            "source": res["source"], "statut": res["statut"],
+                        })
                 i += 1
                 continue
 
@@ -145,13 +165,16 @@ def traduire_labels_planche(words_data: dict, secours=None):
                 t_cart = glossaire.traduire_cartouche_specs(phrase)
                 t_gen = t_cart or glossaire.traduire_terme(phrase)
                 if t_gen is not None:
-                    labels.append({
-                        "text": t_gen,
-                        "bbox": _bbox_englobante([g["bbox"] for g in groupe]),
-                        "vertical": groupe[0]["rotation_deg"] in (90, 270),
-                        "source": phrase,
-                        "statut": "glossaire_cartouche" if t_cart else "glossaire",
-                    })
+                    if not _identique(t_gen, phrase):
+                        labels.append({
+                            "text": t_gen,
+                            "bbox": _bbox_englobante([g["bbox"] for g in groupe]),
+                            "vertical": groupe[0]["rotation_deg"] in (90, 270),
+                            "rotation_deg": groupe[0]["rotation_deg"],
+                            "fit_bbox": groupe[0]["rotation_deg"] in (90, 270),
+                            "source": phrase,
+                            "statut": "glossaire_cartouche" if t_cart else "glossaire",
+                        })
                     i += taille
                     trouve = True
                     break
@@ -159,16 +182,73 @@ def traduire_labels_planche(words_data: dict, secours=None):
                 continue
 
             res = traduire_mot(w["text"], secours)
-            labels.append({
-                "text": res["traduction"], "bbox": w["bbox"],
-                "vertical": w["rotation_deg"] in (90, 270),
-                "source": res["source"], "statut": res["statut"],
-            })
             if res["statut"] == "hors_glossaire":
                 hors_glossaire.append(res)
+            elif not _identique(res["traduction"], res["source"]):
+                labels.append({
+                    "text": res["traduction"], "bbox": w["bbox"],
+                    "vertical": w["rotation_deg"] in (90, 270),
+                    "rotation_deg": w["rotation_deg"],
+                    "fit_bbox": w["rotation_deg"] in (90, 270),
+                    "source": res["source"], "statut": res["statut"],
+                })
             i += 1
 
     return labels, hors_glossaire
+
+
+def traduire_valeur(mots, secours=None):
+    """Traduit la VALEUR d'une ligne du tableau specs (`mots` = mots de la
+    valeur, dans l'ordre de lecture) par le glossaire : expressions de plusieurs
+    mots d'abord (« ANTHRACITE GREY » -> « gris anthracite »), puis mot à mot.
+    Nombres, unités, codes et désignations (tout mot non traduisible) sont
+    recopiés TELS QUELS. Un mot inconnu reste inchangé (rien n'est inventé) et
+    est signalé en hors-glossaire. Retourne (texte, termes_hors_glossaire)."""
+    sortie, hors_glossaire = [], []
+    i, n = 0, len(mots)
+    while i < n:
+        w = mots[i]
+        if w["num"] or not w["translatable"]:
+            sortie.append(w["text"])
+            i += 1
+            continue
+        for taille in range(min(MAX_NGRAM, n - i), 1, -1):
+            groupe = mots[i:i + taille]
+            if any(g["num"] or not g["translatable"] for g in groupe):
+                continue
+            phrase = " ".join(g["text"] for g in groupe)
+            traduction = glossaire.traduire_cartouche_specs(phrase) or glossaire.traduire_terme(phrase)
+            if traduction is not None:
+                sortie.append(traduction)
+                i += taille
+                break
+        else:
+            res = traduire_mot(w["text"], secours)
+            if res["statut"] == "hors_glossaire":
+                hors_glossaire.append(res)
+                sortie.append(w["text"])
+            else:
+                sortie.append(res["traduction"])
+            i += 1
+    return " ".join(sortie), hors_glossaire
+
+
+def _valeur_sur_la_meme_rangee(words, indices):
+    """Mots situés à DROITE de la ligne `indices`, sur la même rangée, dans le
+    même bloc du PDF, mais sur une autre ligne (mise en page « libellé : » puis
+    valeur alignée à droite). Retourne les mots triés de gauche à droite."""
+    ligne = [words[i] for i in indices]
+    bloc = ligne[0]["block_no"]
+    y0 = min(w["bbox"][1] for w in ligne)
+    y1 = max(w["bbox"][3] for w in ligne)
+    x_droit = max(w["bbox"][2] for w in ligne)
+    propres = set(indices)
+    candidats = [
+        w for k, w in enumerate(words)
+        if k not in propres and w["block_no"] == bloc
+        and w["bbox"][0] >= x_droit - 1 and y0 <= (w["bbox"][1] + w["bbox"][3]) / 2 <= y1
+    ]
+    return sorted(candidats, key=lambda w: w["bbox"][0])
 
 
 def extraire_tableau_specs(words_data: dict, secours=None):
@@ -177,8 +257,10 @@ def extraire_tableau_specs(words_data: dict, secours=None):
     chaque LIGNE du PDF est traitée comme une ligne de tableau (OFFER NO /
     MODEL / PLATFORM SIZE / CAPACITY...). Le libellé est le plus long préfixe
     de la ligne qui correspond à une entrée du glossaire (priorité
-    cartouche/specs) ; la valeur est le reste de la ligne, jamais traduite
-    (nombres et codes). Une ligne sans libellé reconnu est incluse quand même
+    cartouche/specs) ; la valeur est le reste de la ligne, traduite par le
+    glossaire (`traduire_valeur`) sauf nombres, unités et codes, recopiés tels
+    quels. Un libellé qui se termine par « : » est rattaché à la valeur alignée
+    à droite sur la même rangée du même bloc. Une ligne sans libellé reconnu est incluse quand même
     (premier mot traduit via `secours`, statut "hors_glossaire") plutôt que
     silencieusement ignorée — sauf si elle ne contient aucune valeur (bandeau
     décoratif, titre de section).
@@ -217,9 +299,15 @@ def extraire_tableau_specs(words_data: dict, secours=None):
             label_res = traduire_mot(premier["text"], secours)
             label_taille = 1
 
-        valeur = " ".join(words[indices[k]]["text"] for k in range(label_taille, n)).strip()
-        if not valeur:
+        mots_valeur = [words[indices[k]] for k in range(label_taille, n)]
+        if [m["text"] for m in mots_valeur] == [":"]:
+            # « POWER PACK : » puis la valeur alignée à droite sur une autre ligne
+            # du même bloc : on la rattache (sinon la valeur est perdue).
+            mots_valeur = _valeur_sur_la_meme_rangee(words, indices) or mots_valeur
+        if not mots_valeur:
             continue  # libellé seul sans valeur : pas une ligne de tableau (titre, bandeau)
+        valeur, hg_valeur = traduire_valeur(mots_valeur, secours)
+        hors_glossaire += hg_valeur
 
         table_fr.append((label_res["traduction"], valeur))
         if label_res["statut"] == "hors_glossaire":

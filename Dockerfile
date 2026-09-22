@@ -10,10 +10,15 @@ FROM python:3.11-slim
 # métapaquet `libreoffice` complet (Writer/Calc/Base/Draw non utilisés ici,
 # image bien plus lourde). `--no-install-recommends` écarte en plus l'aide,
 # l'intégration bureau et les paquets de langue, non nécessaires en conteneur.
+# `fonts-liberation` : polices métriquement compatibles Arial/Times New
+# Roman/Courier New — sans elles, LibreOffice substitue une police par
+# défaut aux largeurs différentes (interlignes, débordements de texte), et
+# le rendu de vérification/export diverge de la référence PowerPoint.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         libreoffice-core \
         libreoffice-impress \
+        fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -41,5 +46,9 @@ EXPOSE 8501
 
 # Render fournit le port réel via la variable d'environnement PORT au
 # démarrage du conteneur (forme shell du CMD pour que $PORT soit résolu à
-# l'exécution, pas au build).
-CMD streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true
+# l'exécution, pas au build). --server.maxUploadSize (Mo) borne la taille
+# acceptée par Streamlit LUI-MÊME, avant que app.py ne s'exécute : sans ça,
+# un PDF plus gros que app.py::LIMITE_PDF_MO serait déjà entièrement reçu en
+# mémoire quand notre propre contrôle de taille s'exécute (bug audit RAM
+# Render) — les deux valeurs doivent rester alignées (50 Mo).
+CMD streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true --server.maxUploadSize=50

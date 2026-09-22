@@ -81,6 +81,82 @@ def test_checklist_invalide_ne_crash_pas(tmp_path):
     assert "Technique" in rapport["checklist"]["message"]
 
 
+def test_bloc_specs_residuel_detecte_par_completude(tmp_path):
+    """Filet de sécurité de `controle_completude` (indépendant du retrait fait
+    à l'assemblage par `assemble.retirer_blocs_specs`) : si un gabarit change
+    de structure et qu'un bloc de specs de l'ancien projet subsiste malgré
+    tout sur une slide, le contrôle de complétude doit le voir plutôt que de
+    laisser un « 1500 kg » d'un autre dossier passer inaperçu."""
+    meta = {"numero": "LDTEST300", "client": "Client Test", "dessinateur": "AB",
+            "indice": "R00", "date": "01/01/2026", "equipement": "MONTE-CHARGE"}
+    out = tmp_path / "test.pptx"
+    proj = {
+        "base": assemble.base_pour_type("non accompagné"), "out": out,
+        "workdir": tmp_path, "meta": meta, "specs": {}, "planches": [],
+    }
+    assemble.assembler(proj)
+
+    # Cas normal : rien à signaler (le retrait à l'assemblage a fait son travail).
+    assert verify.controle_completude(out, meta) == []
+
+    # On réinjecte, à la main, un bloc de specs « ancien projet » (simule un
+    # gabarit qui n'aurait pas été nettoyé) : deux intertitres distincts.
+    from pptx import Presentation
+    from pptx.util import Cm
+
+    prs = Presentation(out)
+    box = prs.slides[0].shapes.add_textbox(Cm(1), Cm(1), Cm(5), Cm(3))
+    box.text_frame.text = "Modèle : ANCIEN\nFinition : RAL 9001"
+    prs.save(out)
+
+    alertes = verify.controle_completude(out, meta)
+    assert any("bloc de spécifications d'un ancien projet" in a for a in alertes)
+
+
+def _checklist_non_vierge(tmp_path, lignes):
+    """Construit une checklist .xlsx réelle, feuille « Technique », avec des
+    valeurs renseignées (par opposition au modèle vierge — cf.
+    `checklist.est_vierge`)."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Technique"
+    ws.append(["Libellé", "Réponse"])
+    for libelle, valeur in lignes:
+        ws.append([libelle, valeur])
+    chemin = tmp_path / "checklist_remplie.xlsx"
+    wb.save(chemin)
+    return chemin
+
+
+def test_checklist_non_vierge_sert_de_source_de_comparaison(tmp_path):
+    """Quand la checklist est réellement renseignée (pas le modèle vierge),
+    `controle_cotes` doit s'en servir : une valeur de la checklist absente à
+    la fois de la source PDF et du deck généré doit remonter comme écart à
+    arbitrer ; une valeur présente dans la source ne doit PAS y remonter
+    (faux positif)."""
+    checklist_path = _checklist_non_vierge(
+        tmp_path, [("Capacité", 1500), ("Vitesse", "0.15")],
+    )
+    meta = {"numero": "LDTEST400", "client": "Client Test", "dessinateur": "AB",
+            "indice": "R00", "date": "01/01/2026", "equipement": "MONTE-CHARGE"}
+    pptx_path = tmp_path / "test.pptx"
+    assemble.assembler({
+        "base": assemble.base_pour_type("non accompagné"), "out": pptx_path,
+        "workdir": tmp_path, "meta": meta, "specs": {}, "planches": [],
+    })
+    words_par_page = {1: {"words": [{"text": "Vitesse 0.15 m/s"}]}}
+
+    rapport = verify.controle_cotes(words_par_page, pptx_path, checklist_path)
+
+    cl = rapport["checklist"]
+    assert cl["vierge"] is False
+    assert "1500" in cl["valeurs_checklist_absentes_du_dossier"]
+    assert "0.15" not in cl["valeurs_checklist_absentes_du_dossier"]
+    assert cl["lignes_technique"]["Capacité"]["Réponse"] == 1500
+
+
 def test_pages_scannees_empeche_le_pass_trompeur(tmp_path):
     """Un contrôle de cotes réalisé alors que des pages retenues sont sans
     couche texte (PDF scanné) ne doit jamais afficher PASS, même si les

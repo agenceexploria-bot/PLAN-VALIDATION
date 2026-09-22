@@ -83,6 +83,20 @@ def test_etiquette_a_l_emplacement_de_son_mot_source(tmp_path, echelle, dpi):
         attendu_y = ((y0 + y1) / 2) / page_h
         reel_x = (tb.left + tb.width / 2 - image.left) / image.width
         reel_y = (tb.top + tb.height / 2 - image.top) / image.height
+        if lab.get("ancre") == "debut":
+            # Suffixe de cote : l'étiquette est ANCRÉE au début du suffixe (elle
+            # ne doit pas mordre sur le nombre qui précède) au lieu d'être
+            # centrée. C'est le bord d'ancrage qui doit coïncider, sur l'axe du
+            # texte ; l'autre axe reste centré.
+            if not lab["vertical"]:
+                attendu_x = x0 / page_w
+                reel_x = (tb.left - image.left) / image.width
+            elif lab["rotation_deg"] == 270:         # texte lu de bas en haut : ancré en bas
+                attendu_y = y1 / page_h
+                reel_y = (tb.top + tb.height / 2 + tb.width / 2 - image.top) / image.height
+            else:                                     # lu de haut en bas : ancré en haut
+                attendu_y = y0 / page_h
+                reel_y = (tb.top + tb.height / 2 - tb.width / 2 - image.top) / image.height
         assert reel_x == pytest.approx(attendu_x, abs=0.003), (
             f"étiquette « {lab['text']} » (échelle {echelle}, {dpi} dpi) : "
             f"x={reel_x:.3f} au lieu de {attendu_x:.3f}"

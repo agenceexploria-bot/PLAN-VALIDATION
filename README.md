@@ -29,9 +29,11 @@ interactions Streamlit (boutons, formulaires, aperçus).
   emplacements d'installation standards. L'app affiche toujours quel
   moteur a produit le rendu affiché, et réutilise le même moteur pour
   l'export PDF que celui validé au contrôle visuel.
-- Sans PowerPoint NI LibreOffice, les étapes 1 à 3 fonctionnent, mais le
-  contrôle visuel et l'export PDF sont indisponibles (l'app le signale
-  clairement plutôt que de planter).
+- Sans PowerPoint NI LibreOffice, tout le pipeline fonctionne jusqu'au PPTX
+  téléchargeable (étape 5) — seuls le contrôle visuel réel et l'export PDF
+  sont indisponibles sur ce poste (l'app le signale clairement plutôt que de
+  planter) ; le PPTX reste ouvrable et vérifiable dans PowerPoint/LibreOffice
+  ailleurs.
 
 ## Installation
 
@@ -106,9 +108,23 @@ plan-validation-app/
 
 ## Limites connues (honnêtes, pas de faux "c'est fait")
 
-- **Reconstruction automatique du tableau specs imparfaite** sur une mise en
-  page fabricant réellement tabulaire (libellés et valeurs dans des blocs de
-  texte séparés, pas sur la même ligne) : l'étape 3 affiche un tableau
+- **Vue 3D de la page de specs : le texte du fabricant N'EST PAS traduit
+  (lacune connue, pas un choix).** La spécification produit prévoit une image
+  3D « traduite en place », mais cette traduction n'est pas implémentée
+  (`callouts` reste vide dans `app.py`). Depuis la règle « on n'efface jamais
+  sans reposer », la vue 3D est reprise telle quelle, sans rédaction : tout
+  texte fournisseur qui s'y trouve (par exemple, sur le PDF de test, le bloc
+  des tolérances : « DETAY », « ÖLÇEK 1:5 », « SERBEST ÖLÇÜ TOLERANSLARI »…)
+  reste dans sa langue d'origine. À contrôler visuellement à l'étape 4.
+  Point ouvert, à traiter avec la troncature de cette vue sur la droite.
+- **Bloc de tolérances des planches** : pour tenir dans ses petites cellules,
+  le français y est composé dans une police très réduite (~4 pt).
+- **Reconstruction automatique du tableau specs imparfaite.** Un libellé qui
+  se termine par « : » est rattaché à la valeur alignée à droite sur la même
+  rangée du même bloc, mais une mise en page réellement tabulaire (libellés et
+  valeurs dans des blocs de texte séparés) n'est pas reconstruite, et des
+  lignes parasites (annotations « détail / échelle », libellé coupé sur deux
+  lignes comme « TOP PLATFORM: ANTI SLIP TEAR METAL ») s'y glissent : l'étape 3 affiche un tableau
   éditable précisément pour cette raison — à corriger au cas par cas plutôt
   que de faire confiance à l'automatique.
 - **Étiquettes en phrase hors glossaire quand le fabricant scinde une
@@ -116,10 +132,10 @@ plan-validation-app/
   test : "ANMA" et "BOYUTLARI" dans deux blocs distincts) : reste flaggé
   "hors glossaire" (texte inchangé, jamais une mauvaise traduction), listé
   dans le rapport de vérification pour validation par Marin.
-- **Bloc de petites cellules (tolérances ISO 2768 en marge)** : positionnement
-  perfectible sur une planche très dense — le skill d'origine documentait
-  déjà ce point (`fit_bbox`), non repris ici faute de données réelles
-  suffisantes pour le généraliser sans casser d'autres cas.
+- **Bloc de petites cellules (tolérances ISO 2768 en marge)** : les libellés
+  verticaux sont composés avec la police réduite pour tenir dans leur cellule
+  source (`fit_bbox`) ; sur une planche très dense, le français plus long que
+  l'original peut encore frôler un voisin — à contrôler au rendu.
 - **PowerPoint COM peut laisser un processus `POWERPNT.EXE` résiduel** après
   usage intensif (quirk connu de l'automatisation COM, pas spécifique à
   cette app) : à fermer via le Gestionnaire des tâches si les exports
@@ -128,6 +144,36 @@ plan-validation-app/
   initialisable** (géré automatiquement en interne) — trouvé en testant
   l'app via `streamlit.testing.v1.AppTest`, qui exécute le script exactement
   comme Streamlit le fait réellement (thread dédié, pas le thread principal).
+
+## Glossaire : choix à valider par Marin
+
+Le glossaire (`data/glossaire.py`) ne publie jamais d'alternative « a/b » sur un
+document. Quand une source proposait deux termes, **le premier est retenu** et
+l'autre est consigné ici — ce sont des décisions de terminologie métier, à
+relire et à corriger si besoin (un test vérifie que ce tableau reste en phase
+avec `ALTERNATIVES_ECARTEES`) :
+
+| Terme source | Retenu | Alternative écartée |
+|---|---|---|
+| `ölçü` | cote | mesure |
+| `kesit` | coupe | section |
+| `ağırlık` | poids | masse |
+| `kontrol` | contrôlé par | vérifié par |
+| `onay` | approbation | visa |
+| `anchor` | ancre | cheville |
+| `disegno` / `drawing` | dessin | plan |
+
+Entrées **retirées** car elles traduisaient à tort un mot courant (la langue
+d'un mot isolé n'est pas détectée) : `not` (anglais « NOT », « DO NOT SCALE »),
+`data` (anglais « DATA »), `piano` et `kat` (ambigus hors contexte). Conséquence
+assumée : un « NOT » ou « KAT » turc légitime n'est plus traduit ; il apparaît
+alors dans les termes hors glossaire du rapport, à traduire à la main.
+Ajout : `outside` → « déporté (extérieur) » (valeur de « POWER PACK »).
+
+Non tranchés, à décider par Marin — valeurs avec une précision entre
+parenthèses qui pourrait être une alternative : `çizen` → « dessiné par
+(dessinateur) », `loads on wall` → « charges sur le mur (efforts sur paroi) »,
+`parça listesi` → « nomenclature (liste de pièces) ».
 
 ## Lancer les tests
 
@@ -161,9 +207,9 @@ n'est pas un paquet pip — cf. `Dockerfile`) sur le palier **gratuit** de
    environnement **Docker**, puis ajouter la variable d'environnement
    `APP_PASSWORD` dans **Environment** avant le premier déploiement.
 
-Si `APP_PASSWORD` n'est pas définie (ex. exécution locale sans Docker),
-l'app reste accessible sans mot de passe — le portail de connexion n'a de
-sens que pour une URL publique.
+`APP_PASSWORD` est **obligatoire** : si elle est absente ou vide (y compris
+en exécution locale, ex. `streamlit run app.py` sans variable définie), l'app
+refuse de démarrer plutôt que de laisser un accès libre par défaut.
 
 ### Limites du palier gratuit — à connaître avant de s'en servir en prod
 

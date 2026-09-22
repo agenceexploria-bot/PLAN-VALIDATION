@@ -22,7 +22,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from core import assemble, checklist as checklist_mod, cover, extract, memlog, nettoyage, render, translate, verify
+from core import assemble, checklist as checklist_mod, cover, etat, extract, memlog, nettoyage, render, translate, verify
 
 st.set_page_config(page_title="Plan de validation Vertical", page_icon="🏗️", layout="wide")
 
@@ -30,22 +30,31 @@ st.set_page_config(page_title="Plan de validation Vertical", page_icon="🏗️"
 # ---------------------------------------------------------------------------
 # Authentification minimale (obligatoire — l'app est exposée publiquement
 # sur une URL Render). Mot de passe unique lu depuis la variable
-# d'environnement APP_PASSWORD, jamais codé en dur. Si la variable n'est
-# pas définie (dev local, avant tout déploiement), l'accès reste libre
-# plutôt que de bloquer un poste de dev.
+# d'environnement APP_PASSWORD, jamais codé en dur. Si la variable n'est pas
+# définie (ou vide), l'app REFUSE de démarrer plutôt que de laisser un accès
+# libre par défaut sur un déploiement exposé publiquement (LOT E — durcissement
+# déploiement) : il faut la définir, y compris en dev local.
 # ---------------------------------------------------------------------------
 
 def _authentifie() -> bool:
-    mot_de_passe_attendu = os.environ.get("APP_PASSWORD")
+    mot_de_passe_attendu = os.environ.get("APP_PASSWORD", "").strip()
     if not mot_de_passe_attendu:
-        return True
+        st.error(
+            "Configuration invalide : la variable d'environnement APP_PASSWORD "
+            "est absente ou vide. L'application refuse de démarrer sans mot de "
+            "passe défini (elle est exposée publiquement)."
+        )
+        st.stop()
     if st.session_state.get("authentifie"):
         return True
 
     st.title("🏗️ Plan de validation Vertical")
     st.text_input("Mot de passe", type="password", key="mdp_saisi")
     if st.button("Se connecter"):
-        if secrets.compare_digest(st.session_state.get("mdp_saisi", ""), mot_de_passe_attendu):
+        saisi = st.session_state.get("mdp_saisi", "")
+        # compare_digest refuse les `str` non-ASCII (TypeError) : on compare
+        # des octets UTF-8, pour qu'un mot de passe accentué ne plante pas.
+        if secrets.compare_digest(saisi.encode("utf-8"), mot_de_passe_attendu.encode("utf-8")):
             st.session_state.authentifie = True
             st.rerun()
         else:
@@ -82,31 +91,7 @@ def _init_etat():
         # évalué à chaque rerun : il créait un dossier vide par interaction.
         nettoyage.purger_dossiers_perimes()
         st.session_state["workdir"] = Path(tempfile.mkdtemp(prefix=nettoyage.PREFIXE))
-    defaut = {
-        "etape": 1,
-        "pdf_path": None,
-        "apercus": None,
-        "pages_sans_texte_apercu": [],
-        "roles": None,
-        "meta": {},
-        "checklist_path": None,
-        "traite": False,
-        "words_par_page": {},
-        "planches": None,
-        "view3d": None,
-        "specs_table": None,
-        "champs_commerciaux_ajoutes": [],
-        "pages_scannees": [],
-        "hors_glossaire": [],
-        "pages_ignorees": [],
-        "pptx_path": None,
-        "png_paths": None,
-        "visuel_valide": False,
-        "render_engine": None,
-        "rapport_texte": None,
-        "pdf_path_final": None,
-    }
-    for cle, valeur in defaut.items():
+    for cle, valeur in etat.defauts().items():
         if cle not in st.session_state:
             st.session_state[cle] = valeur
 
@@ -158,11 +143,11 @@ def etape_1():
         )
         return
 
+    # Le fichier de travail a toujours le même chemin : c'est le CONTENU qui
+    # décide s'il s'agit d'un nouveau PDF (dans ce cas tout l'aval est
+    # réinitialisé, cf. core/etat.py).
     chemin_pdf = st.session_state.workdir / "plan_fabricant.pdf"
-    if st.session_state.pdf_path != chemin_pdf:
-        chemin_pdf.write_bytes(fichier.getvalue())
-        st.session_state.pdf_path = chemin_pdf
-        st.session_state.apercus = None  # force le re-rendu si nouveau fichier
+    etat.deposer_pdf(st.session_state, fichier.getvalue(), chemin_pdf)
 
     if st.session_state.apercus is None:
         with st.spinner("Rendu des aperçus de pages…"):
@@ -281,7 +266,9 @@ def _traiter_pipeline():
     with st.spinner("Extraction du PDF (cotes, rédaction)…"):
         words_par_page = {}
         if pages_garde:
-            words_par_page.update(extract.extraire_pdf(pdf_path, wd, pages_garde, dpi=DPI_GARDE))
+            # Garde / vue 3D : aucune étiquette FR n'y est posée, donc rien n'y est
+            # effacé non plus (règle B1 : pas d'effacement sans pose).
+            words_par_page.update(extract.extraire_pdf(pdf_path, wd, pages_garde, dpi=DPI_GARDE, rediger=False))
         if pages_planches:
             words_par_page.update(extract.extraire_pdf(pdf_path, wd, pages_planches, dpi=DPI_PLANCHE))
         if pages_specs:
@@ -370,6 +357,20 @@ def etape_3():
             "sera marqué « NON VÉRIFIABLE » pour ce dossier."
         )
 
+    # Contrôle bloquant B2 : aucun nombre ne doit avoir été effacé de l'image
+    # par la rédaction. Sinon, on n'assemble pas (et le rapport l'affiche).
+    nombres_perdus = {
+        n: wd["survie_nombres"]["perdus"]
+        for n, wd in st.session_state.words_par_page.items()
+        if wd.get("survie_nombres", {}).get("perdus")
+    }
+    if nombres_perdus:
+        st.error(
+            "BLOQUANT — un ou plusieurs nombres ont été effacés de l'image par la "
+            "rédaction (« " + " ; ".join(f"page {n} : {', '.join(v)}" for n, v in nombres_perdus.items())
+            + " »). Assemblage refusé : une cote ne doit jamais disparaître d'un plan."
+        )
+
     if st.session_state.hors_glossaire:
         vus = {}
         for t in st.session_state.hors_glossaire:
@@ -404,7 +405,7 @@ def etape_3():
 
     col1, col2 = st.columns(2)
     col1.button("← Retour", on_click=aller_a, args=(2,))
-    if col2.button("Assembler le PPTX →", type="primary"):
+    if col2.button("Assembler le PPTX →", type="primary", disabled=bool(nombres_perdus)):
         specs_table_final = [(l["Libellé"], l["Valeur"]) for l in lignes_editees if l.get("Libellé")]
         meta = st.session_state.meta
         base = assemble.base_pour_type(meta["type_equipement"].lower())
@@ -415,6 +416,11 @@ def etape_3():
             "meta": meta, "specs": {"table": specs_table_final},
             "view3d": st.session_state.view3d, "planches": st.session_state.planches,
         }
+        # Tout nouvel assemblage annule la validation du PPTX précédent
+        # (rendu, coche, PDF exporté) : pas de PDF sans validation du PPTX
+        # COURANT. Fait AVANT l'assemblage : s'il échoue, le PPTX déjà écrasé
+        # ne garde de toute façon aucune validation.
+        etat.invalider_validation(st.session_state, st.session_state.workdir)
         with st.spinner("Montage du PPTX…"):
             try:
                 assemble.assembler(proj)
@@ -535,10 +541,14 @@ def etape_4():
             )
             for i, png in enumerate(st.session_state.png_paths):
                 st.image(str(png), caption=f"Slide {i + 1}", width='stretch')
-            st.session_state.visuel_valide = st.checkbox(
+            coche = st.checkbox(
                 "Je confirme avoir vérifié le rendu réel ci-dessus, il est conforme.",
-                value=st.session_state.visuel_valide,
+                value=st.session_state.visuel_valide, key="chk_visuel",
             )
+            # La validation est liée à l'empreinte du PPTX qu'on vient de
+            # regarder : elle ne vaut jamais pour un autre PPTX (cf. core/etat.py).
+            st.session_state.visuel_valide = coche
+            st.session_state.visuel_valide_pour = etat.empreinte(pptx_path) if coche else None
 
     rapport_texte = verify.construire_rapport(
         pptx_path.name, rapport_cotes, alertes_completude,
@@ -554,9 +564,24 @@ def etape_4():
 
     col1, col2 = st.columns(2)
     col1.button("← Retour (corriger)", on_click=lambda: (aller_a(3), st.session_state.__setitem__("traite", False)))
-    accord = st.checkbox("Le rapport est validé — j'autorise le passage au téléchargement.",
-                          disabled=not st.session_state.visuel_valide)
-    if col2.button("Continuer →", type="primary", disabled=not accord):
+    validation_ok = etat.validation_courante(st.session_state, pptx_path)
+    if render.disponible():
+        accord = st.checkbox("Le rapport est validé — j'autorise le passage au téléchargement.",
+                              disabled=not validation_ok, key="chk_accord")
+        peut_continuer = accord and validation_ok
+    else:
+        # LOT E : sans moteur de rendu sur ce poste, aucune validation
+        # visuelle n'est possible ICI — mais le PPTX (document de travail)
+        # reste téléchargeable pour vérification manuelle. L'export PDF, lui,
+        # reste bloqué à l'étape 5 (etat.validation_courante / render.disponible).
+        accord = st.checkbox(
+            "Je comprends qu'aucun rendu réel n'a pu être vérifié sur ce poste "
+            "(ni PowerPoint ni LibreOffice) — je pourrai télécharger le PPTX "
+            "pour le vérifier moi-même, mais l'export PDF restera indisponible ici.",
+            key="chk_accord",
+        )
+        peut_continuer = accord
+    if col2.button("Continuer →", type="primary", disabled=not peut_continuer):
         aller_a(5)
         st.rerun()
 
@@ -578,8 +603,8 @@ def etape_5():
         )
 
     st.subheader("Export PDF (diffusion)")
-    if not st.session_state.visuel_valide:
-        st.warning("Le rapport de vérification n'a pas été validé — retournez à l'étape 4.")
+    if not etat.validation_courante(st.session_state, pptx_path):
+        st.warning("Le rapport de vérification n'a pas été validé pour ce PPTX — retournez à l'étape 4.")
     elif not render.disponible():
         st.warning("Ni PowerPoint ni LibreOffice disponibles sur ce poste : export PDF impossible ici. Utilisez l'un de ces logiciels directement (Fichier → Exporter en PDF) sur le PPTX téléchargé.")
     elif st.session_state.pdf_path_final is None:

@@ -14,7 +14,7 @@ services:
     envVars:
       # Jamais commitée : Render demande sa valeur lors de la création du
       # service à partir de ce Blueprint (sync: false), à saisir dans le
-      # dashboard (Environment). Voir README pour le comportement si elle
-      # n'est pas définie (accès libre, utile en dev local uniquement).
+      # dashboard (Environment). Obligatoire — l'app refuse de démarrer si
+      # elle est absente ou vide (LOT E, durcissement déploiement).
       - key: APP_PASSWORD
         sync: false

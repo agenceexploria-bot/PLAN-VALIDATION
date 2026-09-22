@@ -111,9 +111,9 @@ EQUIPEMENT_STRUCTURE = {
     "floor": "niveau",
     "level": "niveau",
     "landing": "niveau",
-    "piano": "niveau",
+    # « piano » (italien : étage) retiré : mot ambigu (plan, plateau…) hors contexte.
     "livello": "niveau",
-    "kat": "niveau",
+    # « kat » (turc : étage) retiré : mot ambigu hors contexte, non traduit plutôt que faux.
     "seviye": "niveau",
     "durak": "niveau",
     "through access": "accès traversant",
@@ -306,26 +306,28 @@ PLAN_TECHNIQUE_TR = {
     "tolerans": "tolérance",
     "sınıf": "classe",
     "kalite": "qualité",
-    "ölçü": "cote/mesure",
+    "ölçü": "cote",  # alternative écartée : « mesure »
     "yüzey": "surface",
     "yüzey pürüzlülüğü": "rugosité de surface",
     "görünüş": "vue",
     "ön görünüş": "vue de face",
     "üst görünüş": "vue de dessus",
     "yan görünüş": "vue de côté",
-    "kesit": "coupe/section",
+    "kesit": "coupe",  # alternative écartée : « section »
     "plan": "plan",
     "malzeme": "matériau",
-    "ağırlık": "poids/masse",
+    "ağırlık": "poids",  # alternative écartée : « masse »
     "adet": "quantité",
     "parça": "pièce",
     "parça listesi": "nomenclature (liste de pièces)",
     "çizen": "dessiné par (dessinateur)",
-    "kontrol": "contrôlé/vérifié par",
-    "onay": "approbation/visa",
+    "kontrol": "contrôlé par",  # alternative écartée : « vérifié par »
+    "onay": "approbation",  # alternative écartée : « visa »
     "tarih": "date",
     "revizyon": "révision",
-    "not": "note",
+    # « not » (turc : note) retiré : c'est aussi l'anglais « NOT » (DO NOT SCALE) et
+    # il serait traduit « note » sans que la langue soit détectée. Le pluriel « notlar »
+    # (non ambigu) reste traduit.
     "notlar": "notes",
     "montaj": "montage",
     # Cf. SKILL.md « Petites cellules (bloc tolérances ISO 2768 en marge) » —
@@ -349,17 +351,38 @@ MONTAGE_GENIE_CIVIL = {
     "flatbed": "plateau",
     "loads on wall": "charges sur le mur (efforts sur paroi)",
     "with operator on board": "avec opérateur à bord",
+    # Valeur de « POWER PACK » sur les plans fabricant (groupe hydraulique hors
+    # gaine). Traduction donnée par l'utilisateur (LOT C), à valider par Marin.
+    "outside": "déporté (extérieur)",
     "finished level": "niveau fini",
     "finished floor": "niveau fini",
-    "anchor": "ancre/cheville",
+    "anchor": "ancre",  # alternative écartée : « cheville »
     "surrounding protection": "protection périphérique",
     "main lift components": "principaux composants du monte-charge",
     "to be handled": "à manutentionner",
     "firma per approvazione": "visa pour approbation",
-    "data": "date",
-    "disegno": "dessin/plan",
-    "drawing": "dessin/plan",
+    # « data » (italien : date) retiré : c'est aussi l'anglais « DATA », traduit à tort « date ».
+    "disegno": "dessin",  # alternative écartée : « plan »
+    "drawing": "dessin",  # alternative écartée : « plan »
     "designer": "dessinateur",
+}
+
+# ---------------------------------------------------------------------------
+# Alternatives tranchées (LOT C2) — décisions de TERMINOLOGIE MÉTIER à faire
+# valider par Marin. Une traduction publiée sur un document ne doit jamais
+# contenir « a/b » : on retient le premier terme, l'autre est consigné ici ET
+# dans le README (section « Glossaire : choix à valider par Marin »).
+# ---------------------------------------------------------------------------
+
+ALTERNATIVES_ECARTEES = {
+    "ölçü":     {"retenu": "cote",          "ecarte": "mesure"},
+    "kesit":    {"retenu": "coupe",         "ecarte": "section"},
+    "ağırlık":  {"retenu": "poids",         "ecarte": "masse"},
+    "kontrol":  {"retenu": "contrôlé par",  "ecarte": "vérifié par"},
+    "onay":     {"retenu": "approbation",   "ecarte": "visa"},
+    "anchor":   {"retenu": "ancre",         "ecarte": "cheville"},
+    "disegno":  {"retenu": "dessin",        "ecarte": "plan"},
+    "drawing":  {"retenu": "dessin",        "ecarte": "plan"},
 }
 
 # ---------------------------------------------------------------------------

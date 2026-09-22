@@ -173,3 +173,107 @@ def test_cartouche_cellules_fusionnees_masquees_videes_pas_dupliquees(tmp_path):
                             f"cellule fusionnée masquée non vidée : {cell.text!r}"
                         )
     assert trouve_au_moins_une_cellule_fusionnee, "fixture de test obsolète : plus aucune cellule fusionnée dans la base"
+
+
+# ---------------------------------------------------------------------------
+# A2 — specs de l'ancien projet retirées de la slide 2, sur les DEUX gabarits
+# (audit §4 « Critique » : LD64397 gardait « 1500 kg / 2295 x 2980 / 3340 mm… »
+# sous le nouveau tableau, car le retrait ciblait des noms de shapes propres
+# à LD82040).
+# ---------------------------------------------------------------------------
+import copy
+
+import pytest
+
+from core import verify
+
+TYPES = ["non accompagné", "accompagné"]
+
+# Contenu propre aux anciens projets des gabarits (jamais un nom de shape).
+RESIDUS_ANCIEN_PROJET = [
+    "Fonctionnement", "Capacité de charge", "Machinerie", "Accès paliers",
+    "Finition", "Prérequis", "Détails et caractéristiques",
+    "1500 kg", "1000 kg", "2295", "2980", "3340", "3930", "2835", "RAL 7016",
+]
+TITRES_A_CONSERVER = ["PLANS DE VALIDATION", "MONTE-CHARGE"]
+
+
+def _textes_hors_tableaux(slide):
+    """Texte de toutes les shapes texte (groupes inclus) hors tableaux."""
+    textes = []
+
+    def parcourir(shapes):
+        for sh in shapes:
+            if sh.shape_type == 6:  # groupe
+                parcourir(sh.shapes)
+            elif sh.has_text_frame and sh.text_frame.text.strip():
+                textes.append(sh.text_frame.text)
+    parcourir(slide.shapes)
+    return textes
+
+
+def _assembler(tmp_path, base, nom="a2.pptx"):
+    meta = {"numero": "LDTEST400", "client": "Client A2", "dessinateur": "AB",
+            "indice": "R00", "date": "01/01/2026", "equipement": "MONTE-CHARGE"}
+    out = tmp_path / nom
+    assemble.assembler({
+        "base": base, "out": out, "workdir": tmp_path, "meta": meta,
+        "specs": {"table": [("Modèle", "NOUVEAU")]}, "planches": [],
+    })
+    return out
+
+
+@pytest.mark.parametrize("type_equipement", TYPES)
+def test_aucune_spec_d_ancien_projet_sur_la_slide_2(tmp_path, type_equipement):
+    out = _assembler(tmp_path, assemble.base_pour_type(type_equipement))
+    textes = " | ".join(_textes_hors_tableaux(Presentation(out).slides[1]))
+    trouves = [r for r in RESIDUS_ANCIEN_PROJET if r in textes]
+    assert not trouves, f"Résidus d'un ancien projet sur la slide 2 ({type_equipement}) : {trouves}"
+
+
+@pytest.mark.parametrize("type_equipement", TYPES)
+def test_titres_de_la_slide_2_conserves(tmp_path, type_equipement):
+    out = _assembler(tmp_path, assemble.base_pour_type(type_equipement))
+    textes = " | ".join(_textes_hors_tableaux(Presentation(out).slides[1]))
+    for titre in TITRES_A_CONSERVER:
+        assert titre in textes, f"« {titre} » supprimé à tort ({type_equipement})"
+
+
+@pytest.mark.parametrize("type_equipement", TYPES)
+def test_retrait_des_specs_ne_depend_d_aucun_nom_de_shape(tmp_path, type_equipement):
+    """Gabarit dont TOUS les noms de shapes ont été changés : le retrait doit
+    se faire sur le contenu, pas sur un nom/id figé."""
+    prs = Presentation(assemble.base_pour_type(type_equipement))
+    for i, sh in enumerate(prs.slides[1].shapes):
+        sh.name = f"Renomme {i}"
+    base = tmp_path / "base_renommee.pptx"
+    prs.save(base)
+
+    out = _assembler(tmp_path, base)
+    textes = " | ".join(_textes_hors_tableaux(Presentation(out).slides[1]))
+    assert not [r for r in RESIDUS_ANCIEN_PROJET if r in textes]
+    assert "PLANS DE VALIDATION" in textes
+
+
+@pytest.mark.parametrize("type_equipement", TYPES)
+def test_nouveau_tableau_specs_present_sur_la_slide_2(tmp_path, type_equipement):
+    out = _assembler(tmp_path, assemble.base_pour_type(type_equipement))
+    tables = [sh.table for sh in Presentation(out).slides[1].shapes if sh.has_table]
+    cellules = " ".join(c.text for t in tables for r in t.rows for c in r.cells)
+    assert "NOUVEAU" in cellules
+
+
+def test_controle_completude_signale_un_bloc_specs_d_ancien_projet(tmp_path):
+    """Filet de sécurité : si un bloc de specs d'ancien projet subsiste (gabarit
+    modifié, structure inattendue), le rapport de vérification l'annonce."""
+    out = _assembler(tmp_path, assemble.base_pour_type("accompagné"))
+    meta = {"numero": "LDTEST400", "client": "Client A2"}
+    assert not [a for a in verify.controle_completude(out, meta) if "spécifications" in a]
+
+    prs = Presentation(out)
+    tb = prs.slides[1].shapes.add_textbox(0, 0, 3000000, 3000000)
+    tb.text_frame.text = "Modèle\nCapacité de charge : 1500 kg\nCourse totale : 3340 mm\nMachinerie"
+    prs.save(out)
+
+    alertes = verify.controle_completude(out, meta)
+    assert any("Slide 2" in a and "spécifications" in a for a in alertes), alertes

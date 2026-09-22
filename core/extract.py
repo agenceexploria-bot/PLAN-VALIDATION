@@ -15,9 +15,12 @@ Règles absolues respectées :
 """
 import re
 import threading
+from collections import Counter
 from pathlib import Path
 
 import fitz  # pymupdf
+
+from . import translate
 
 # Une seule extraction à la fois dans le processus (palier Render : 512 Mo).
 # Le pic mémoire vient du rendu pleine page (~100 Mo par page A3 à 300 dpi) :
@@ -28,20 +31,23 @@ import fitz  # pymupdf
 # par processus) et non dans app.py, ré-exécuté à chaque rerun.
 VERROU_EXTRACTION = threading.Lock()
 
-# Mot "à traduire" = contient des lettres et n'est pas un invariant
+# Mot "à traduire" = uniquement des LETTRES, hors code invariant. Un token qui
+# contient un chiffre (nombre, cote, désignation Ø120 / M12 / R25 / H7 / Ra3.2,
+# code EX.26.396R1 / DHYA.2 / LD82040 / P12345 / IP54 / RAL7016), une unité
+# (12mm, 1500kg) ou une marque de coupe (A-A) n'est JAMAIS ciblé : ni effacé,
+# ni retapé — le nombre reste toujours visible dans l'image (règle absolue).
 INVARIANT = re.compile(
     r"^(RAL|IP|REV|RIF|LD|FFL|kW|KW|kg|mm|cm|m/s|V|A|Hz|N|P)\.?\d*$", re.I
 )
 
+# Marque de coupe / de vue : « A-A », « B-B », « C-C »…
+CODE_COUPE = re.compile(r"^[A-Za-zØø]-[A-Za-zØø]$")
+
 # Cote composée écrite sans espace autour du "x" de multiplication, ex.
 # "2000X1500" ou "2835X1800X150" (largeur x profondeur [x hauteur]) : c'est
-# UN SEUL token pymupdf, pas un nombre + un libellé. À ne jamais confondre
-# avec une VRAIE cote fusionnée à un suffixe texte comme "9700(FFL)" : ici,
-# après le premier nombre, il ne reste que des "x/X + nombre", aucune lettre
-# de contenu. Trouvé au rendu réel (test DHYA.2) : sans cette règle,
-# `fused_number` prend "X1500" pour un suffixe à traduire, le rédige puis le
-# réétiquette par-dessus le nombre voisin — la valeur n'est jamais altérée,
-# mais l'affichage devient illisible (chevauchement de texte).
+# UN SEUL token pymupdf, pas un nombre + un libellé. Trouvé au rendu réel (test
+# DHYA.2) : sans cette règle, `fused_number` prenait "X1500" pour un suffixe à
+# traduire (chevauchement de texte).
 DIMENSION_COMPOSEE = re.compile(r"^\d[\d.,]*(?:[xX]\d[\d.,]*)+$")
 
 # Continuation isolée d'une telle cote (au cas où un fabricant la tokenise en
@@ -51,24 +57,41 @@ FRAGMENT_COTE = re.compile(r"^[xX]\d[\d.,]*(?:[xX]\d[\d.,]*)*$")
 # Cote fusionnée avec un suffixe texte : ex. "9700(FFL)", "200(PIT)".
 NUM_PREFIX = re.compile(r"^[\d][\d.,]*")
 
+# Un « suffixe » qui n'est qu'une unité (12mm, 1500kg, 3.5kW, 2,5m/s) n'est pas
+# un qualificatif à traduire : le token entier est intouchable.
+UNITE_SUFFIXE = re.compile(
+    r"^\(?(mm|cm|dm|m|km|kg|g|t|kn|n|kw|w|v|a|ah|hz|bar|mpa|db|l|m/s)\)?\.?$", re.I
+)
+
+# Nombres d'un texte (sert au contrôle de survie après rédaction).
+NOMBRE = re.compile(r"\d+(?:[.,]\d+)?")
+
 
 def is_translatable(word: str) -> bool:
     if not re.search(r"[A-Za-zÀ-ÿ]", word):
         return False  # nombre pur, cote -> on n'y touche jamais
+    if re.search(r"\d", word):
+        return False  # nombre, code ou désignation : jamais effacé ni retapé
     stripped = word.strip(".,;:()")
-    if INVARIANT.match(stripped) or FRAGMENT_COTE.match(stripped) or DIMENSION_COMPOSEE.match(stripped):
+    if INVARIANT.match(stripped) or CODE_COUPE.match(stripped)             or FRAGMENT_COTE.match(stripped) or DIMENSION_COMPOSEE.match(stripped):
         return False
     return True
 
 
 def fused_number(word: str):
-    """Si `word` est une cote fusionnée à un suffixe texte (ex. '9700(FFL)'),
-    retourne le nombre en tête. Sinon None."""
-    if is_translatable(word):
-        m = NUM_PREFIX.match(word)
-        if m:
-            return m.group(0)
-    return None
+    """Si `word` est une cote fusionnée à un suffixe TEXTE (ex. '9700(FFL)'),
+    retourne le nombre en tête. Sinon None : cote composée (2000X1500),
+    désignation (2xØ14), unité collée (12mm, 1500kg) ou nombre seul ne sont
+    jamais découpés — leur « suffixe » n'est pas un libellé à traduire."""
+    m = NUM_PREFIX.match(word)
+    if not m:
+        return None
+    suffixe = word[m.end():]
+    if not suffixe or not re.match(r"[A-Za-zÀ-ÿ(]", suffixe):
+        return None
+    if re.search(r"\d", suffixe) or UNITE_SUFFIXE.match(suffixe):
+        return None
+    return m.group(0)
 
 
 def page_char_boxes(page):
@@ -91,8 +114,11 @@ def page_span_directions(page):
     spans = []
     for b in page.get_text("rawdict")["blocks"]:
         for line in b.get("lines", []):
+            # La direction d'écriture est portée par la LIGNE : les spans n'ont
+            # pas de clé "dir" (la lire dessus rendait tout « horizontal »).
+            direction = line.get("dir", (1.0, 0.0))
             for span in line.get("spans", []):
-                spans.append((span["bbox"], span.get("dir", (1.0, 0.0))))
+                spans.append((span["bbox"], direction))
     return spans
 
 
@@ -170,7 +196,8 @@ def rendre_apercus(pdf_path: Path, dpi: int = 100):
         doc.close()
 
 
-def extraire_page(doc, pno: int, out: Path, dpi: int = 300, generer_image: bool = True) -> dict:
+def extraire_page(doc, pno: int, out: Path, dpi: int = 300, generer_image: bool = True,
+                  rediger: bool = True) -> dict:
     """Extraction complète d'UNE page retenue (étape 2) :
       - page_N_redacted.png : SEUL rendu produit — rédigé (suffixes de cotes
         fusionnées et libellés texte purs retirés, nombres jamais touchés),
@@ -227,19 +254,31 @@ def extraire_page(doc, pno: int, out: Path, dpi: int = 300, generer_image: bool 
     if not generer_image:
         return words_data
 
-    # Rédaction (option 2 — cf. SKILL.md « Cotes fusionnées au texte ») :
-    #  - libellé texte pur -> rédaction complète (bbox du mot) ;
-    #  - cote fusionnée     -> on ne rédige QUE le suffixe (suffix_bbox) ;
-    #  - nombre pur / cote  -> jamais touché.
-    # PDF scanné (words vide ou aucun mot traduisible) -> rendu rédigé = brut.
-    if any(w["translatable"] for w in words):
-        for w in words:
-            if w["num"]:
-                if w["suffix_bbox"]:
-                    page.add_redact_annot(fitz.Rect(w["suffix_bbox"]))
-            elif w["translatable"]:
-                page.add_redact_annot(fitz.Rect(w["bbox"]))
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+    # Rédaction : UNIQUEMENT les zones où une étiquette FR sera posée (règle B1 :
+    # un mot traduit = un effacement + une pose ; jamais de pose sans effacement,
+    # jamais d'effacement sans pose). Les zones viennent de la MÊME fonction que
+    # celle qui construit les étiquettes (`translate.traduire_labels_planche`),
+    # donc les deux ne peuvent pas diverger. Un mot hors glossaire, ou traduit à
+    # l'identique, n'est pas touché. Cote fusionnée (« 9700(FFL) ») : seule la
+    # bbox du suffixe est effacée, jamais le nombre.
+    # `rediger=False` (page de garde / vue 3D, où aucune étiquette n'est posée) :
+    # rendu brut, rien d'effacé.
+    if rediger:
+        labels, _ = translate.traduire_labels_planche({"words": words})
+        for lab in labels:
+            page.add_redact_annot(fitz.Rect(lab["bbox"]))
+        if labels:
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+        # Contrôle bloquant : chaque nombre de la page doit SURVIVRE à la
+        # rédaction (comparaison au texte d'origine, multiensembles). Si un
+        # nombre a disparu — une zone effacée mordait dessus —, la page est en
+        # échec : l'app refuse d'assembler et le rapport de vérification l'affiche.
+        avant = Counter(n for w in words for n in NOMBRE.findall(w["text"]))
+        apres = Counter(n for w in page.get_text("words") for n in NOMBRE.findall(w[4]))
+        words_data["survie_nombres"] = {
+            "total": sum(avant.values()),
+            "perdus": sorted((avant - apres).elements()),
+        }
     # Libération explicite du pixmap dès l'écriture sur disque (bug audit RAM
     # Render) : ~50 Mo par pixmap RGB non compressé pour une page A3 à 300
     # dpi — jamais laissé référencé au-delà du .save() qui l'écrit.
@@ -257,7 +296,8 @@ def est_pdf_scanne(words_data: dict) -> bool:
     return not any(w["translatable"] for w in words_data["words"])
 
 
-def extraire_pdf(pdf_path: Path, out: Path, pages_1based, dpi: int = 300, generer_image: bool = True) -> dict:
+def extraire_pdf(pdf_path: Path, out: Path, pages_1based, dpi: int = 300, generer_image: bool = True,
+                 rediger: bool = True) -> dict:
     """Extraction de plusieurs pages retenues. `pages_1based` = liste de
     numéros de page 1-based. Écrit page_N_redacted.png (sauf si
     `generer_image=False`, cf. `extraire_page`) / page_N_words.json dans
@@ -275,7 +315,7 @@ def extraire_pdf(pdf_path: Path, out: Path, pages_1based, dpi: int = 300, genere
         resultats = {}
         try:
             for n in pages_1based:
-                words_data = extraire_page(doc, n - 1, out, dpi, generer_image)
+                words_data = extraire_page(doc, n - 1, out, dpi, generer_image, rediger)
                 (out / f"page_{n}_words.json").write_text(
                     json.dumps(words_data, ensure_ascii=False, indent=1),
                     encoding="utf-8",

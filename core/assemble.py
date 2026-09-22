@@ -74,10 +74,18 @@ CONTACTS = [
     (7.0, "Jérémie", "+33 7 77 83 24 87", "contact_jeremie.png"),
 ]
 
-# Noms de shapes des TextBox specs à retirer sur la base LD82040 (relevés par
-# inspection réelle — cf. SKILL.md). Une base différente peut nécessiter une
-# autre valeur, passée via proj["specs_remove_shapes"].
-SPECS_REMOVE_SHAPES_DEFAUT = ["TextBox 15", "TextBox 12"]
+# Blocs de specs de l'ANCIEN projet des gabarits, repérés par leur CONTENU et
+# jamais par un nom/id de shape : LD82040 les nomme « TextBox 12/15 », LD64397
+# « Google Shape;118/119;p2 » (le retrait par noms laissait donc les specs de
+# l'ancien projet — 1500 kg, 2295 x 2980, 3340 mm… — sous le nouveau tableau).
+# Un bloc de specs = une zone de texte qui porte au moins DEUX intertitres/
+# libellés de la fiche technique (les bandeaux « PLANS DE VALIDATION » et
+# « MONTE-CHARGE … » n'en portent aucun et sont conservés).
+INTERTITRES_SPECS = re.compile(
+    r"(?im)^\s*(fonctionnement|mod[eè]le|machinerie|acc[eè]s paliers|"
+    r"acc[eè]s plate-?forme|finition|d[ée]tails et caract[ée]ristiques techniques|"
+    r"pr[ée]requis|capacit[ée] de charge\s*:)"
+)
 
 # ── Purge du cartouche par LIBELLÉ (point de vigilance n°1) ─────────────────
 # Contrairement au build_pptx.py d'origine (qui remplaçait des valeurs
@@ -96,6 +104,52 @@ MOTIF_NUMERO_AFFAIRE_CELLULE = re.compile(r"(?i)^\s*LD\d+\s*$")
 MOTIF_CODE_AFFAIRE_COUVERTURE = re.compile(r"(?i)LD\d+")
 MOTIF_INDICE_COUVERTURE = re.compile(r"(?i)R\d+")
 CHAMPS_A_COMPLETER = "à compléter"
+
+
+# ── Zone standard du plan (B3) ──────────────────────────────────────────────
+# Une SEULE zone pour la vue de plan de toutes les planches, dérivée de la
+# géométrie du gabarit (jamais de valeurs en dur par slide) : sous le bandeau,
+# au-dessus du cartouche, avec une petite marge. Les images d'origine des
+# gabarits ont des tailles et des positions toutes différentes ; c'est cette
+# zone unique qui garantit la même position d'une planche à l'autre.
+MARGE_ZONE_LATERALE = Cm(0.6)
+MARGE_ZONE_VERTICALE = Cm(0.2)
+TOLERANCE_BANDE = Cm(0.3)
+
+
+def bornes_verticales(slide, largeur_slide):
+    """(bas du bandeau, haut du cartouche) de la slide, lus sur sa géométrie :
+    le bandeau est la forme collée au bord haut qui couvre la largeur de la
+    slide ; le cartouche est le tableau le plus haut."""
+    bandeau = [sh.top + sh.height for sh in slide.shapes
+               if sh.top < Cm(0.5) and sh.width > 0.9 * largeur_slide]
+    cartouches = [sh.top for sh in slide.shapes if sh.has_table]
+    if not bandeau or not cartouches:
+        raise ValueError(
+            "Gabarit inattendu : bandeau et/ou cartouche introuvables sur la slide "
+            "des planches — impossible de définir la zone du plan."
+        )
+    return max(bandeau), min(cartouches)
+
+
+def zone_plan(slide, largeur_slide):
+    """(left, top, width, height) de la zone standard du plan."""
+    bas_bandeau, haut_cartouche = bornes_verticales(slide, largeur_slide)
+    top = bas_bandeau + MARGE_ZONE_VERTICALE
+    bas = haut_cartouche - MARGE_ZONE_VERTICALE
+    return MARGE_ZONE_LATERALE, top, largeur_slide - 2 * MARGE_ZONE_LATERALE, bas - top
+
+
+def retirer_images_du_gabarit(slide, bas_bandeau, haut_cartouche):
+    """Retire toute image du gabarit posée dans la bande de travail (entre le
+    bandeau et le cartouche), repérée par sa POSITION — plus par sa largeur :
+    l'ancien seuil `width > 8 cm` laissait en place une image plus petite (slide
+    4 du gabarit « accompagné »), qui restait sous le nouveau plan."""
+    for sh in list(slide.shapes):
+        if (sh.shape_type == 13  # PICTURE
+                and sh.top >= bas_bandeau - TOLERANCE_BANDE
+                and sh.top + sh.height <= haut_cartouche + TOLERANCE_BANDE):
+            sh._element.getparent().remove(sh._element)
 
 
 # ── Clonage de slide FIABLE ─────────────────────────────────────────────────
@@ -203,10 +257,29 @@ def set_page_number(slide, n):
                             run.text = re.sub(r"Page\s*:\s*\d+", f"Page : {n}", run.text)
 
 
-def remove_shapes(slide, names):
-    for sh in list(slide.shapes):
-        if sh.name in names:
-            sh._element.getparent().remove(sh._element)
+def shapes_texte(shapes):
+    """Toutes les shapes portant du texte, y compris à l'intérieur des groupes
+    (tableaux exclus : le cartouche est traité à part par `purger_cartouche`)."""
+    for sh in list(shapes):
+        if sh.shape_type == 6:  # groupe
+            yield from shapes_texte(sh.shapes)
+        elif sh.has_text_frame:
+            yield sh
+
+
+def est_bloc_specs(texte: str) -> bool:
+    """True si `texte` est un bloc de specs d'un ancien projet (au moins deux
+    intertitres/libellés distincts de la fiche technique)."""
+    return len({m.group(1).lower() for m in INTERTITRES_SPECS.finditer(texte)}) >= 2
+
+
+def retirer_blocs_specs(slide):
+    """Retire de la slide les blocs de specs de l'ancien projet, repérés par
+    leur contenu (cf. `INTERTITRES_SPECS`). Retourne le nombre de blocs retirés."""
+    a_retirer = [sh for sh in shapes_texte(slide.shapes) if est_bloc_specs(sh.text_frame.text)]
+    for sh in a_retirer:
+        sh._element.getparent().remove(sh._element)
+    return len(a_retirer)
 
 
 def delete_slide(prs, index):
@@ -287,7 +360,7 @@ def _largeur_texte(text, fpt):
 
 def add_overlay(slide, text, bbox, geom, vertical=False, fpt=8, page_w=PAGE_W_PT,
                  wrap=False, box_w_cm=None, anchor_left=False, leader_to=None,
-                 fit_bbox=False, opaque=False):
+                 fit_bbox=False, opaque=False, rotation=270, ancre_debut=False):
     """Étiquette FR superposée — zone de texte indépendante et éditable,
     jamais aplatie dans l'image. Fond transparent par défaut (l'image rédigée
     a déjà effacé le texte source) ; `opaque=True` réservé au cas d'un PDF
@@ -300,7 +373,13 @@ def add_overlay(slide, text, bbox, geom, vertical=False, fpt=8, page_w=PAGE_W_PT
     de la bbox du mot source (échelle réelle du plan) ET du texte FR
     réellement affiché (avec marge), le plus grand des deux l'emportant :
     une étiquette ne doit ni écraser un texte FR plus long que la source, ni
-    laisser une boîte disproportionnée sur un texte source très court."""
+    laisser une boîte disproportionnée sur un texte source très court.
+
+    `rotation` (90 = lu de haut en bas, 270 = lu de bas en haut) suit la
+    direction d'écriture du mot source. `ancre_debut` : le texte part du DÉBUT
+    de `bbox` (bord gauche, ou bas/haut selon la rotation) et s'en éloigne au
+    lieu d'être centré — pour un suffixe de cote, dont l'étiquette FR est plus
+    longue que l'anglais et ne doit pas mordre sur le nombre qui le précède."""
     left, top, disp_w, _ = geom
     epp = disp_w / page_w
     x0, y0, x1, y1 = bbox
@@ -310,7 +389,7 @@ def add_overlay(slide, text, bbox, geom, vertical=False, fpt=8, page_w=PAGE_W_PT
     if vertical and fit_bbox:
         bw = max(int((y1 - y0) * epp), Cm(0.6)); bh = max(int((x1 - x0) * epp), Cm(0.28))
         tb = slide.shapes.add_textbox(int(left + cx * epp - bw / 2), int(sy - bh / 2), int(bw), int(bh))
-        tb.rotation = 270
+        tb.rotation = rotation
         fpt = max(3.5, min(fpt, (bw / 12700.0) / (len(text) * 0.55)))
     elif vertical:
         # Boîte tournée (cote verticale) : la largeur AVANT rotation suit la
@@ -318,15 +397,20 @@ def add_overlay(slide, text, bbox, geom, vertical=False, fpt=8, page_w=PAGE_W_PT
         # et le texte FR affiché, qui peut déborder du mot d'origine.
         bw = max(int((y1 - y0) * epp) + marge, _largeur_texte(text, fpt) + marge, Cm(0.6))
         bh = max(int((x1 - x0) * epp) + marge, Cm(0.28))
+        if ancre_debut:
+            # boîte tournée : son centre est décalé pour que le DÉBUT du texte
+            # tombe sur le bord du suffixe et que le texte s'en éloigne.
+            sy = (top + y1 * epp - bw / 2) if rotation == 270 else (top + y0 * epp + bw / 2)
         tb = slide.shapes.add_textbox(int(left + cx * epp - bw / 2), int(sy - bh / 2), int(bw), int(bh))
-        tb.rotation = 270
+        tb.rotation = rotation
     elif anchor_left:
         bw = Cm(box_w_cm or 5); bh = Cm(1.3)
         tb = slide.shapes.add_textbox(int(left + x0 * epp), int(sy - bh / 2), int(bw), int(bh))
     else:
         bw = max(int((x1 - x0) * epp) + marge, _largeur_texte(text, fpt) + marge, Cm(0.6))
         bh = max(int((y1 - y0) * epp) + marge, Pt(fpt * 1.4))
-        tb = slide.shapes.add_textbox(int(left + cx * epp - bw / 2), int(sy - bh / 2), int(bw), int(bh))
+        gauche = int(left + x0 * epp) if ancre_debut else int(left + cx * epp - bw / 2)
+        tb = slide.shapes.add_textbox(gauche, int(sy - bh / 2), int(bw), int(bh))
     tf = tb.text_frame; tf.word_wrap = wrap
     tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
     if opaque:
@@ -335,7 +419,7 @@ def add_overlay(slide, text, bbox, geom, vertical=False, fpt=8, page_w=PAGE_W_PT
         tb.fill.background()
     tb.line.fill.background()
     from pptx.enum.text import PP_ALIGN
-    tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+    tf.paragraphs[0].alignment = PP_ALIGN.LEFT if ancre_debut else PP_ALIGN.CENTER
     r = tf.paragraphs[0].add_run(); r.text = text
     r.font.size = Pt(fpt); r.font.color.rgb = NOIR
     if leader_to:
@@ -361,9 +445,17 @@ def cell_border(tc, hexc="404040", w=12700):
         tcPr.insert(idx, ln)
 
 
-def add_fr_table(slide, left, top, width, rows):
+def add_fr_table(slide, left, top, width, rows, bas_max=None):
+    """Tableau FR bordé. `bas_max` (EMU) : bord à ne jamais dépasser (haut du
+    cartouche moins une marge). La hauteur des lignes s'y adapte et la police
+    est réduite si besoin : un tableau de 20 lignes à 0,85 cm recouvrait le
+    cartouche et masquait « Date de création » et « Client »."""
     n = len(rows)
-    tbl = slide.shapes.add_table(n, 2, left, top, width, Cm(0.85 * n)).table
+    haut_ligne = Cm(0.85)
+    if bas_max is not None:
+        haut_ligne = min(haut_ligne, int((bas_max - top) / n))
+    taille_pt = 9 if haut_ligne >= Cm(0.6) else max(5.0, 9 * haut_ligne / Cm(0.6))
+    tbl = slide.shapes.add_table(n, 2, left, top, width, haut_ligne * n).table
     tbl.columns[0].width = Cm(4.6); tbl.columns[1].width = width - Cm(4.6)
     for r, (lab, val) in enumerate(rows):
         for c, (txt, bold, fill) in enumerate([(lab, True, GRISF), (val, False, BLANC)]):
@@ -375,7 +467,7 @@ def add_fr_table(slide, left, top, width, rows):
                 for run in p.runs:
                     run.text = ""
             run = tf.paragraphs[0].add_run(); run.text = txt
-            run.font.size = Pt(9); run.font.bold = bold; run.font.color.rgb = NOIR
+            run.font.size = Pt(taille_pt); run.font.bold = bold; run.font.color.rgb = NOIR
             cell_border(cell._tc)
     return tbl
 
@@ -412,7 +504,6 @@ def assembler(proj: dict) -> Path:
     prs = Presentation(str(out))
     W = prs.slide_width
 
-    specs_remove = proj.get("specs_remove_shapes", SPECS_REMOVE_SHAPES_DEFAUT)
     v3d = proj.get("view3d")
     planches = proj.get("planches", [])
 
@@ -431,7 +522,7 @@ def assembler(proj: dict) -> Path:
     # page dédiée séparée, cf. docstring de module).
     s2 = prs.slides[1]
     sp = proj.get("specs", {})
-    remove_shapes(s2, specs_remove)
+    retirer_blocs_specs(s2)
     purger_cartouche(s2, meta)
     if v3d:
         geom2 = fit_picture(s2, wd / v3d["image"], Cm(0.6), Cm(2.3), Cm(17.2), Cm(15.3))
@@ -442,18 +533,24 @@ def assembler(proj: dict) -> Path:
                         fpt=c.get("fpt", 8), leader_to=c.get("leader_to"),
                         opaque=c.get("opaque", False))
     if sp.get("table"):
-        add_fr_table(s2, Cm(18.4), Cm(3.4), Cm(10.8), [tuple(r) for r in sp["table"]])
+        bas_tableau = bornes_verticales(s2, W)[1] - MARGE_ZONE_VERTICALE
+        add_fr_table(s2, Cm(18.4), Cm(3.4), Cm(10.8), [tuple(r) for r in sp["table"]], bas_max=bas_tableau)
 
-    # SLIDES 3+ — planches dessin.
+    # SLIDES 3+ — planches dessin. Zone du plan UNIQUE pour toutes les planches,
+    # calculée UNE fois sur la slide gabarit (avant tout clonage/retrait).
     base_idx = 2
+    bas_bandeau, haut_cartouche = bornes_verticales(prs.slides[base_idx], W) if planches else (0, 0)
+    zone = zone_plan(prs.slides[base_idx], W) if planches else None
+    # Toutes les slides de planches sont créées AVANT d'en décorer une seule :
+    # un clone pris sur une slide déjà décorée héritait du plan ET des étiquettes
+    # de la planche 1 (planches 3+ sur « non accompagné », 8+ sur « accompagné »).
+    while len(prs.slides._sldIdLst) < base_idx + len(planches):
+        clone_slide(prs, base_idx)
     for i, planche in enumerate(planches):
-        s = (prs.slides[base_idx + i] if (base_idx + i) < len(prs.slides._sldIdLst)
-             else clone_slide(prs, base_idx))
-        for sh in list(s.shapes):
-            if sh.shape_type == 13 and sh.width > Cm(8):  # image fournisseur d'origine
-                sh._element.getparent().remove(sh._element)
+        s = prs.slides[base_idx + i]
+        retirer_images_du_gabarit(s, bas_bandeau, haut_cartouche)
         purger_cartouche(s, meta)
-        geom = fit_picture(s, wd / planche["image"], Cm(0.6), Cm(2.3), W - Cm(1.2), Cm(15.3))
+        geom = fit_picture(s, wd / planche["image"], *zone)
         # Largeur RÉELLE de la page source (points PDF) : les bbox des étiquettes
         # sont dans son repère, `add_overlay` en déduit l'échelle points -> EMU.
         # La constante A3 (PAGE_W_PT) n'est qu'un repli : sur tout autre format
@@ -462,7 +559,9 @@ def assembler(proj: dict) -> Path:
         for lab in planche.get("labels", []):
             add_overlay(s, lab["text"], lab["bbox"], geom, page_w=page_w,
                         vertical=lab.get("vertical", False), fpt=lab.get("fpt", 8),
-                        fit_bbox=lab.get("fit_bbox", False), opaque=lab.get("opaque", False))
+                        fit_bbox=lab.get("fit_bbox", False), opaque=lab.get("opaque", False),
+                        rotation=lab.get("rotation_deg") or 270,
+                        ancre_debut=lab.get("ancre") == "debut")
 
     # Numérotation par position finale (garde=1 sans champ, specs=2, planches=3…)
     for i, s in enumerate(prs.slides):
