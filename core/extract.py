@@ -263,8 +263,14 @@ def extraire_page(doc, pno: int, out: Path, dpi: int = 300, generer_image: bool 
     # bbox du suffixe est effacée, jamais le nombre.
     # `rediger=False` (page de garde / vue 3D, où aucune étiquette n'est posée) :
     # rendu brut, rien d'effacé.
+    bboxes_sans_effet_visuel = []
     if rediger:
         labels, _ = translate.traduire_labels_planche({"words": words})
+        # Rendu AVANT rédaction de la seule zone de chaque étiquette (petite
+        # bbox, coût négligeal) : sert au contrôle pixel ci-dessous — un
+        # crop, jamais la pleine page (bug audit RAM Render).
+        avant_zones = {i: page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=fitz.Rect(lab["bbox"]))
+                       for i, lab in enumerate(labels)}
         for lab in labels:
             page.add_redact_annot(fitz.Rect(lab["bbox"]))
         if labels:
@@ -279,12 +285,48 @@ def extraire_page(doc, pno: int, out: Path, dpi: int = 300, generer_image: bool 
             "total": sum(avant.values()),
             "perdus": sorted((avant - apres).elements()),
         }
+        # Rédaction sans effet VISUEL (bug trouvé sur un vrai plan fabricant,
+        # 260002601__UP25_SPB) : certains PDF dessinent leur texte en tracés
+        # vectoriels, doublés d'une couche de texte invisible pour la
+        # sélection/recherche. `apply_redactions()` retire cette couche de
+        # texte et rapporte un succès, mais ne touche pas le tracé vectoriel
+        # visible s'il ne tient pas ENTIÈREMENT dans le petit rectangle de
+        # rédaction du mot (comportement par défaut de pymupdf : `graphics=1`,
+        # « remove graphics if contained in rectangle »). `survie_nombres` ne
+        # peut pas voir ce bug (aucun nombre en cause) : seule une comparaison
+        # pixel AVANT/APRÈS sur la bbox de chaque étiquette le détecte. Les
+        # zones qui n'ont pas changé sont rédigées directement sur l'image
+        # rasterisée finale (rectangle plein), en PIL, plus bas.
+        for i, lab in enumerate(labels):
+            apres_zone = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=fitz.Rect(lab["bbox"]))
+            if avant_zones[i].samples == apres_zone.samples:
+                bboxes_sans_effet_visuel.append(lab["bbox"])
+        avant_zones = None
+        words_data["redaction_pil_fallback"] = bboxes_sans_effet_visuel
     # Libération explicite du pixmap dès l'écriture sur disque (bug audit RAM
     # Render) : ~50 Mo par pixmap RGB non compressé pour une page A3 à 300
     # dpi — jamais laissé référencé au-delà du .save() qui l'écrit.
     pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
-    pix.save(out / f"page_{n}_redacted.png")
-    pix = None
+    if bboxes_sans_effet_visuel:
+        # Rédaction directe sur l'image rasterisée : seul recours quand le
+        # PDF lui-même ne peut pas être nettoyé (tracé vectoriel hors de
+        # portée de apply_redactions). Même remplissage blanc que la
+        # rédaction PDF standard, pour un résultat visuellement identique.
+        import io
+
+        from PIL import Image, ImageDraw
+
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        pix = None
+        draw = ImageDraw.Draw(img)
+        for bbox in bboxes_sans_effet_visuel:
+            x0, y0, x1, y1 = (round(v * scale) for v in bbox)
+            draw.rectangle([x0, y0, x1, y1], fill="white")
+        img.save(out / f"page_{n}_redacted.png")
+        img = None
+    else:
+        pix.save(out / f"page_{n}_redacted.png")
+        pix = None
 
     return words_data
 

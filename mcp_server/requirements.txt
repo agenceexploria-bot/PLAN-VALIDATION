@@ -1,0 +1,13 @@
+# Pipeline (core/) — mêmes versions que requirements.txt (app Streamlit),
+# sans streamlit/pywin32/psutil (inutiles ici : pas d'UI, moteur de rendu
+# LibreOffice uniquement, jamais PowerPoint/COM).
+pymupdf==1.28.2
+python-pptx==1.0.2
+Pillow==12.3.0
+openpyxl==3.1.5
+
+# Serveur MCP — SDK officiel (streamable-http) + app ASGI (jeton Bearer,
+# route de téléchargement) + serveur applicatif.
+mcp==2.2.0
+starlette==1.6.0
+uvicorn==0.53.0

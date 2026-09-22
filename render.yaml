@@ -18,3 +18,26 @@ services:
       # elle est absente ou vide (LOT E, durcissement déploiement).
       - key: APP_PASSWORD
         sync: false
+
+  # Serveur MCP « Plan de Validation Vertical » pour Dust — service DISTINCT
+  # de l'app Streamlit ci-dessus (process, port et jeton d'accès différents),
+  # même dépôt. Détails et configuration Dust : mcp_server/README.md.
+  - type: web
+    name: plan-validation-mcp
+    runtime: docker
+    dockerfilePath: mcp_server/Dockerfile
+    # Contexte = racine du dépôt (pas mcp_server/) : le Dockerfile y copie
+    # core/, data/ et templates/, partagés avec l'app Streamlit.
+    dockerContext: .
+    plan: free
+    region: frankfurt
+    envVars:
+      # Jeton Bearer serveur-à-serveur pour Dust (cf. mcp_server/auth.py) —
+      # jamais commité, obligatoire (le serveur refuse de démarrer sans lui).
+      - key: MCP_AUTH_TOKEN
+        sync: false
+      # PAS besoin de définir MCP_PUBLIC_BASE_URL ici : Render renseigne
+      # automatiquement RENDER_EXTERNAL_URL pour tout service web, que
+      # mcp_server/fichiers.py utilise en repli (cf. son docstring) — les
+      # liens de téléchargement fonctionnent dès le premier déploiement,
+      # sans devoir connaître l'URL Render à l'avance.

@@ -83,7 +83,10 @@ plan-validation-app/
 │   └── contact_nadia.png / contact_jeremie.png  # photos contacts projet
 ├── tests/
 │   ├── fixtures/             # vrai plan fabricant de test + vraie checklist vierge
+│   ├── mcp/                    # tests du serveur MCP (cf. mcp_server/README.md)
 │   └── test_*.py              # non-régression (pytest)
+├── mcp_server/                # serveur MCP (pour Dust) — service séparé, réutilise core/
+│   └── README.md               # documentation et déploiement dédiés
 └── requirements.txt
 ```
 
@@ -191,6 +194,9 @@ comme c'est très souvent le cas en pratique) — pas des PDF reconstitués.
 L'app se déploie en Docker (nécessaire pour installer LibreOffice, qui
 n'est pas un paquet pip — cf. `Dockerfile`) sur le palier **gratuit** de
 [Render](https://render.com/).
+
+> Le pipeline est aussi exposé comme serveur MCP (pour un agent Dust),
+> service Render séparé — cf. `mcp_server/README.md`, pas documenté ici.
 
 ### Connecter le dépôt
 

@@ -313,6 +313,45 @@ def test_aucune_etiquette_ne_retape_un_nombre_ou_un_code(tmp_path):
     assert sorted(l["source"] for l in labels) == ["(PIT)", "PIT"]
 
 
+# --- contrôle : la rédaction a un effet VISUEL réel, pas seulement textuel -
+
+def test_redaction_sans_effet_visuel_bascule_en_redaction_pil(tmp_path):
+    """Bug trouvé sur un vrai plan fabricant (260002601__UP25_SPB) : ce PDF
+    dessine son texte en tracés vectoriels (pas des glyphes de police),
+    doublés d'une couche de texte invisible superposée pour la sélection/
+    recherche — un montage PDF « CAD hybride » courant. `apply_redactions()`
+    retire la couche de texte et RAPPORTE UN SUCCÈS, mais ne touche pas le
+    tracé vectoriel visible s'il ne tient pas ENTIÈREMENT dans le petit
+    rectangle de rédaction du mot (comportement par défaut de pymupdf :
+    `graphics=1`, « remove graphics if contained in rectangle » — un tracé
+    qui déborde, même légèrement, survit). `survie_nombres` ne peut pas voir
+    ce bug : aucun nombre n'est en cause, c'est du texte anglais qui reste
+    visible SOUS l'étiquette française posée par-dessus.
+
+    Simulé ici : un rectangle plein qui déborde largement la bbox du mot
+    invisible « PIT » (le « tracé vectoriel »)."""
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=300)
+    page.draw_rect(fitz.Rect(70, 90, 220, 130), fill=(0, 0, 0))
+    page.insert_text((100, 114), "PIT", fontsize=16, render_mode=3)
+    pdf = tmp_path / "vecteur.pdf"
+    doc.save(pdf)
+    doc.close()
+
+    brut = _rendu_brut(pdf, 1)
+    words = extract.extraire_pdf(pdf, tmp_path, [1], dpi=DPI)[1]
+    redigee = Image.open(tmp_path / "page_1_redacted.png").convert("RGB")
+
+    w = [w for w in words["words"] if w["text"] == "PIT"][0]
+    zone_brute = _zone(brut, w["bbox"])
+    zone_redigee = _zone(redigee, w["bbox"])
+    assert _texte_efface(zone_brute, zone_redigee), (
+        "le tracé vectoriel visible doit disparaître de l'image rédigée "
+        "(bascule en rédaction PIL attendue), même si apply_redactions() ne "
+        "l'a pas retiré du PDF"
+    )
+
+
 # --- contrôle : les nombres SURVIVENT à la rédaction -----------------------
 
 def test_survie_des_nombres_pass_sur_le_fixture(planche):
