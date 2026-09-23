@@ -6,17 +6,22 @@ import fitz
 
 from core import cover, extract
 
-from .. import fichiers, util
+from .. import fichiers, pdf_cache, util
 
 ROLES_VALIDES = ("planche", "garde", "specs")
 
 
-def extraire_page(pdf_base64: str, page_num: int, dpi: int = 300, role: str = "planche") -> dict[str, Any]:
-    """Extrait UNE page retenue du PDF fabricant (étape 2 du pipeline) :
-    rendu image et mots détectés avec bbox + indicateur traduisible. Cote
-    fusionnée à un suffixe texte (ex. "9700(FFL)") : le nombre reste
-    TOUJOURS visible dans l'image, seul le suffixe est isolé (champ
-    `suffix_bbox`) — jamais de cote retapée de mémoire.
+def extraire_page(pdf_id: str, page_num: int, dpi: int = 300, role: str = "planche") -> dict[str, Any]:
+    """Extrait UNE page retenue du PDF fabricant (étape 2 du pipeline, une
+    fois par page retenue) : rendu image et mots détectés avec bbox +
+    indicateur traduisible. Cote fusionnée à un suffixe texte (ex.
+    "9700(FFL)") : le nombre reste TOUJOURS visible dans l'image, seul le
+    suffixe est isolé (champ `suffix_bbox`) — jamais de cote retapée de
+    mémoire.
+
+    `pdf_id` vient de la réponse d'`inventaire_pdf` (appelé une seule fois en
+    amont) — NE PAS repasser le PDF en base64 ici. Si `pdf_id` est inconnu ou
+    expiré (cache 30 min glissantes), relancez `inventaire_pdf`.
 
     L'image (et la vue 3D le cas échéant) est une URL de téléchargement à
     usage unique (5 min de durée de vie), pas du contenu inline : à 300 dpi
@@ -49,7 +54,11 @@ def extraire_page(pdf_base64: str, page_num: int, dpi: int = 300, role: str = "p
     if role not in ROLES_VALIDES:
         raise ValueError(f"role invalide : {role!r} (attendu : {ROLES_VALIDES}).")
 
-    contenu = util.decoder_pdf(pdf_base64)
+    contenu = pdf_cache.recuperer(pdf_id)
+    if contenu is None:
+        raise ValueError(
+            f"pdf_id {pdf_id!r} inconnu ou expiré — relancez inventaire_pdf pour en obtenir un nouveau."
+        )
     with util.workdir_temporaire() as wd:
         pdf_path = wd / "plan_fabricant.pdf"
         pdf_path.write_bytes(contenu)

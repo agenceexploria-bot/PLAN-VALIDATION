@@ -21,8 +21,8 @@ même code `core/`, jamais le même déploiement.
 
 | Outil | Étape | Rôle |
 |---|---|---|
-| `inventaire_pdf` | 1 | Nombre de pages, taille, aperçu basse résolution — pour classer les pages |
-| `extraire_page` | 2 | Rendu + mots détectés d'UNE page (`role="planche"\|"garde"\|"specs"`) |
+| `inventaire_pdf` | 1 | Nombre de pages, taille, aperçu basse résolution — pour classer les pages ; met le PDF en cache et retourne `pdf_id` |
+| `extraire_page` | 2 | Rendu + mots détectés d'UNE page (`role="planche"\|"garde"\|"specs"`), référencée par `pdf_id` |
 | `traduire_mots` | 3 | Glossaire Vertical appliqué aux mots d'une page déjà extraite |
 | `assembler_pptx` | 4 | Montage du PPTX (copie d'un plan existant, jamais un template vide) |
 | `verifier_rendu` | 5 | Rendu par slide (LibreOffice) + rapport de vérification — portail obligatoire |
@@ -35,7 +35,32 @@ et comment l'utiliser. Ordre d'appel attendu : `inventaire_pdf` →
 `verifier_rendu` (montrer les images à l'utilisateur, obtenir son accord) →
 `exporter_pdf`.
 
-## Fichiers binaires : des URLs, jamais du contenu inline
+## Le PDF fabricant en entrée : transmis une seule fois, référencé par `pdf_id`
+
+Constaté avec un agent Dust réel traitant un vrai plan multi-pages :
+renvoyer le PDF complet en base64 à **chaque** appel (`inventaire_pdf`, puis
+`extraire_page` une fois par page) faisait hésiter l'agent sur le volume
+dès quelques pages — il se mettait à improviser des contournements
+dangereux (rastérisation basse résolution, OCR local, découpage manuel du
+PDF) plutôt que d'appeler l'outil normalement.
+
+`inventaire_pdf` reçoit donc le PDF en base64 **une seule fois** par
+pipeline, le met en cache côté serveur (`mcp_server/pdf_cache.py`, 30 min,
+prolongées à chaque lecture) et retourne un `pdf_id` opaque ; `extraire_page`
+le référence par ce `pdf_id` au lieu de retransmettre le PDF. Si `pdf_id`
+est inconnu ou expiré, `extraire_page` refuse explicitement (`ValueError`)
+— il suffit de relancer `inventaire_pdf`.
+
+⚠️ Décision assumée : ceci réintroduit un état serveur entre deux appels
+MCP (le principe « aucun état conservé entre appels » ne s'applique plus au
+PDF d'entrée, seulement aux dossiers de travail par appel, cf.
+`mcp_server/util.py`) — accepté car le problème observé (hésitation de
+l'agent face au volume répété) est plus coûteux que la simplicité du «
+sans état ». Contrairement au registre de téléchargement (`fichiers.py`,
+usage UNIQUE), le cache PDF est **réutilisable** (une lecture par page) et
+son expiration **glisse** à chaque lecture.
+
+## Fichiers binaires en sortie : des URLs, jamais du contenu inline
 
 Le SDK MCP officiel (streamable-http, `mcp>=2.0`) plafonne à **1 Mio** la
 taille d'une réponse d'outil côté client, sans réglage possible côté
@@ -50,8 +75,9 @@ Flux pour l'agent : `GET` l'URL → ré-encoder les octets reçus en base64 →
 fournir ce base64 en entrée de l'outil suivant qui en a besoin (ex.
 `extraire_page.image_url` → `assembler_pptx.planches[].image_base64`). Les
 *entrées* des outils restent en base64 classique, sans limite particulière
-(bornées par `TAILLE_MAX_REQUETE_OCTETS`, cf. `server.py`) — seules les
-*sorties* binaires passent par ce mécanisme.
+(bornées par `TAILLE_MAX_REQUETE_OCTETS`, cf. `server.py`) — à l'exception
+du PDF fabricant, transmis une seule fois (cf. section précédente,
+`pdf_id`).
 
 Sécurité du lien (`mcp_server/fichiers.py`) — comme une URL S3 pré-signée :
 jeton aléatoire imprévisible (256 bits), à usage unique (supprimé dès le
@@ -157,15 +183,18 @@ Dans la configuration d'un agent Dust, ajouter un serveur MCP personnalisé :
   pas versionné.
 - **Vue 3D fournisseur non traduite** (callouts) : limite déjà connue du
   pipeline `core/`, pas spécifique au serveur MCP — cf. README racine.
-- **Un seul process, sans état partagé entre appels** (voir
-  `mcp_server/util.py`) : chaque appel a son propre dossier de travail
-  jetable. Le registre de fichiers publiés (`mcp_server/fichiers.py`), lui,
-  vit en mémoire du process — un redémarrage du service (déploiement, mais
-  aussi OOM-kill Render, déjà observé sur ce projet) invalide tous les liens
-  de téléchargement en attente (acceptable : durée de vie 5 min de toute
-  façon). Les fichiers laissés sur disque par l'instance précédente sont
-  nettoyés au démarrage du process suivant
-  (`fichiers.purger_dossiers_orphelins_au_demarrage`), pas de fuite
+- **Un seul process, sans état partagé entre appels — sauf le PDF fabricant
+  en cache** (voir `mcp_server/util.py`) : chaque appel a son propre dossier
+  de travail jetable. Le registre de fichiers publiés (`mcp_server/fichiers.py`)
+  et le cache du PDF en cours (`mcp_server/pdf_cache.py`, cf. section
+  « Le PDF fabricant en entrée » ci-dessus), eux, vivent en mémoire du
+  process — un redémarrage du service (déploiement, mais aussi OOM-kill
+  Render, déjà observé sur ce projet) invalide tous les liens de
+  téléchargement en attente (acceptable : durée de vie 5 min) ET tout
+  `pdf_id` en cours (acceptable : il suffit de relancer `inventaire_pdf`).
+  Les fichiers laissés sur disque par l'instance précédente sont nettoyés au
+  démarrage du process suivant (`fichiers.purger_dossiers_orphelins_au_demarrage`
+  et `pdf_cache.purger_dossiers_orphelins_au_demarrage`), pas de fuite
   accumulée entre redémarrages.
 - **Téléchargement interrompu = lien définitivement grillé.** Le jeton est
   invalidé et le fichier supprimé du disque dès que le serveur COMMENCE à

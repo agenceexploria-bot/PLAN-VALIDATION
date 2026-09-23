@@ -98,10 +98,20 @@ def test_liste_les_6_outils_et_appelle_inventaire_pdf(url_serveur):
                     resultat = await session.call_tool("inventaire_pdf", {"pdf_base64": pdf_b64})
                     assert not resultat.is_error, resultat.content
                     data = resultat.structured_content
+                    assert data["pdf_id"]
                     assert data["n_pages"] == 2
                     for page in data["pages"]:
                         assert page["apercu_url"].startswith(url_serveur.rsplit("/mcp", 1)[0])
                         assert "apercu_png_base64" not in page
+
+                    # extraire_page référence le PDF par pdf_id (mcp_server/pdf_cache.py)
+                    # plutôt que de le retransmettre en base64 — c'est le point qui a
+                    # fait hésiter un agent Dust réel face au volume répété.
+                    resultat_page = await session.call_tool(
+                        "extraire_page", {"pdf_id": data["pdf_id"], "page_num": 2, "dpi": 150, "role": "planche"}
+                    )
+                    assert not resultat_page.is_error, resultat_page.content
+                    assert resultat_page.structured_content["page_num"] == 2
 
     asyncio.run(_run())
 
