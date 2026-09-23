@@ -24,6 +24,7 @@ from mcp.client.streamable_http import streamable_http_client
 RACINE = Path(__file__).resolve().parent.parent.parent
 FIXTURE_PDF = RACINE / "tests" / "fixtures" / "DHYA2_test.pdf"
 JETON = "jeton-de-test-mcp"
+JETON_UPLOAD = "jeton-de-test-upload-pdf"  # distinct de JETON — cf. mcp_server/auth.py
 
 pytestmark = pytest.mark.skipif(not FIXTURE_PDF.exists(), reason="fixture PDF absente")
 
@@ -37,7 +38,7 @@ def _port_libre() -> int:
 @pytest.fixture(scope="module")
 def url_serveur():
     port = _port_libre()
-    env = {**os.environ, "MCP_AUTH_TOKEN": JETON, "PORT": str(port)}
+    env = {**os.environ, "MCP_AUTH_TOKEN": JETON, "PDF_UPLOAD_TOKEN": JETON_UPLOAD, "PORT": str(port)}
     proc = subprocess.Popen(
         [sys.executable, "-m", "mcp_server.server"],
         cwd=str(RACINE), env=env,
@@ -121,16 +122,18 @@ def test_upload_pdf_via_curl_externe_puis_pipeline_complet(url_serveur):
     """Simule ce qu'un agent Dust réel ferait dans son bac à sable — `curl`,
     PAS le client MCP Python qu'on contrôle par ailleurs dans ce fichier —
     pour téléverser le PDF hors canal MCP (mcp_server/pdf_cache.py) : upload
-    multipart sur POST /pdfs, puis réutilisation du `pdf_id` obtenu dans
-    inventaire_pdf et extraire_page via un vrai échange MCP. C'est
-    précisément le scénario (upload externe non-Python) qui avait échappé
-    aux tests précédents et qui a révélé, en conditions réelles avec Dust,
-    qu'un agent n'a souvent AUCUN moyen de produire du base64 lui-même."""
+    multipart sur POST /pdfs avec PDF_UPLOAD_TOKEN (jeton DISTINCT de celui
+    des appels d'outils, cf. mcp_server/auth.py), puis réutilisation du
+    `pdf_id` obtenu dans inventaire_pdf et extraire_page via un vrai échange
+    MCP (avec MCP_AUTH_TOKEN, cette fois). C'est précisément le scénario
+    (upload externe non-Python) qui avait échappé aux tests précédents et
+    qui a révélé, en conditions réelles avec Dust, qu'un agent n'a souvent
+    AUCUN moyen de produire du base64 lui-même."""
     base_url = url_serveur.rsplit("/mcp", 1)[0]
     resultat_curl = subprocess.run(
         [
             "curl", "-sS", "-X", "POST", f"{base_url}/pdfs",
-            "-H", f"Authorization: Bearer {JETON}",
+            "-H", f"Authorization: Bearer {JETON_UPLOAD}",
             "-F", f"pdf=@{FIXTURE_PDF}",
         ],
         capture_output=True, text=True, timeout=30,
@@ -165,13 +168,35 @@ def test_upload_pdf_via_curl_externe_puis_pipeline_complet(url_serveur):
 def test_upload_pdf_sans_jeton_bearer_refuse(url_serveur):
     """Contrairement au téléchargement de SORTIE (fichiers.py, exempté du
     Bearer — destiné au navigateur de l'utilisateur final), l'upload
-    d'ENTRÉE est un point d'entrée serveur-à-serveur : protégé par le MÊME
-    jeton Bearer que /mcp."""
+    d'ENTRÉE est un point d'entrée serveur-à-serveur : protégé par un jeton
+    Bearer (PDF_UPLOAD_TOKEN — distinct de celui de /mcp, cf. test suivant)."""
     base_url = url_serveur.rsplit("/mcp", 1)[0]
     r = httpx2.post(
         f"{base_url}/pdfs", files={"pdf": ("x.pdf", b"%PDF-1.4 pas un vrai pdf")}, timeout=10,
     )
     assert r.status_code == 401
+
+
+def test_jetons_upload_et_mcp_non_interchangeables(url_serveur):
+    """Cœur de la portée réduite de PDF_UPLOAD_TOKEN (mcp_server/auth.py) :
+    une fuite de ce jeton (réaliste, destiné à être collé en clair dans les
+    instructions d'un agent Dust) ne doit PAS donner accès à /mcp (tous les
+    outils, y compris exporter_pdf) — et réciproquement, MCP_AUTH_TOKEN ne
+    doit PAS marcher sur /pdfs."""
+    base_url = url_serveur.rsplit("/mcp", 1)[0]
+
+    # Le jeton d'upload ne doit PAS ouvrir /mcp.
+    r1 = httpx2.post(url_serveur, json={}, headers={"Authorization": f"Bearer {JETON_UPLOAD}"}, timeout=5)
+    assert r1.status_code == 401
+
+    # Le jeton MCP ne doit PAS ouvrir /pdfs.
+    r2 = httpx2.post(
+        f"{base_url}/pdfs",
+        files={"pdf": ("x.pdf", b"%PDF-1.4 pas un vrai pdf")},
+        headers={"Authorization": f"Bearer {JETON}"},
+        timeout=10,
+    )
+    assert r2.status_code == 401
 
 
 def test_url_publiee_telechargeable_sans_jeton_bearer_et_a_usage_unique(url_serveur):

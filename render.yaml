@@ -34,7 +34,17 @@ services:
     envVars:
       # Jeton Bearer serveur-à-serveur pour Dust (cf. mcp_server/auth.py) —
       # jamais commité, obligatoire (le serveur refuse de démarrer sans lui).
+      # Protège /mcp (tous les outils) — jamais collé dans un texte destiné
+      # à un agent, contrairement à PDF_UPLOAD_TOKEN ci-dessous.
       - key: MCP_AUTH_TOKEN
+        sync: false
+      # Jeton Bearer DISTINCT du précédent, à portée réduite : protège
+      # UNIQUEMENT POST /pdfs (upload direct du PDF fabricant, cf.
+      # mcp_server/pdf_cache.py). Destiné à apparaître en clair dans les
+      # instructions de l'agent Dust (aucun mécanisme de secret injectable
+      # trouvé côté Dust) — sa fuite éventuelle reste sans effet sur les
+      # autres outils (exporter_pdf, etc.), protégés par MCP_AUTH_TOKEN.
+      - key: PDF_UPLOAD_TOKEN
         sync: false
       # PAS besoin de définir MCP_PUBLIC_BASE_URL ici : Render renseigne
       # automatiquement RENDER_EXTERNAL_URL pour tout service web, que

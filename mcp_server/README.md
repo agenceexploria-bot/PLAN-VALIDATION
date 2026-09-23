@@ -57,7 +57,7 @@ D'où un point d'entrée HTTP **direct**, hors du canal MCP (donc pas soumis
 
 ```
 POST {base_url}/pdfs
-Authorization: Bearer <MCP_AUTH_TOKEN>   (même jeton que /mcp)
+Authorization: Bearer <PDF_UPLOAD_TOKEN>   (jeton DISTINCT de MCP_AUTH_TOKEN, cf. ci-dessous)
 Content-Type: multipart/form-data ; champ "pdf" = le fichier
 
 → 200 {"pdf_id": "...", "expire_dans_s": 1800}
@@ -80,9 +80,16 @@ explicitement (`ValueError`) — il suffit de retéléverser le PDF.
   accepté car les deux problèmes observés sont plus coûteux que la
   simplicité du « sans état ».
 - `POST /pdfs`, contrairement au téléchargement de sortie (`fichiers.py`,
-  volontairement exempté du Bearer), est protégé par le **même** jeton
-  Bearer que `/mcp` : c'est un point d'entrée serveur-à-serveur, jamais
-  cliqué par l'utilisateur final.
+  volontairement exempté du Bearer), est protégé par un jeton Bearer — mais
+  un jeton **DISTINCT** de `MCP_AUTH_TOKEN` (`PDF_UPLOAD_TOKEN`, cf.
+  `mcp_server/auth.py`), à portée réduite à ce seul point d'entrée. Raison :
+  `PDF_UPLOAD_TOKEN` est destiné à apparaître en clair dans les instructions
+  d'un agent Dust (aucun mécanisme de secret injectable trouvé côté Dust au
+  moment d'écrire ceci), sa fuite est donc assumée comme éventualité
+  réaliste — un jeton à portée réduite limite les dégâts à « peut téléverser
+  des PDF », jamais à « peut appeler `exporter_pdf` ». `MCP_AUTH_TOKEN`,
+  lui, n'apparaît jamais dans un texte destiné à être collé où que ce soit,
+  et continue de protéger `/mcp` (tous les outils) seul.
 - Contrairement au registre de téléchargement (`fichiers.py`, usage
   UNIQUE), le cache PDF est **réutilisable** (une lecture par page) et son
   expiration **glisse** à chaque lecture.
@@ -118,7 +125,8 @@ jamais recevoir le jeton Bearer serveur-à-serveur.
 
 | Variable | Obligatoire | Rôle |
 |---|---|---|
-| `MCP_AUTH_TOKEN` | **Oui** | Jeton Bearer serveur-à-serveur (Dust → ce serveur). Le serveur refuse de démarrer si absent/vide. |
+| `MCP_AUTH_TOKEN` | **Oui** | Jeton Bearer serveur-à-serveur, protège `/mcp` (tous les outils). Le serveur refuse de démarrer si absent/vide. Ne doit JAMAIS apparaître dans un texte destiné à être collé où que ce soit (ex. instructions d'agent Dust). |
+| `PDF_UPLOAD_TOKEN` | **Oui** | Jeton Bearer **distinct** de `MCP_AUTH_TOKEN`, protège UNIQUEMENT `POST /pdfs`. Le serveur refuse de démarrer si absent/vide. Destiné, lui, à apparaître en clair dans les instructions de l'agent Dust (cf. section « Le PDF fabricant en entrée ») — portée réduite exprès pour limiter les dégâts d'une fuite. |
 | `MCP_PUBLIC_BASE_URL` | Non | URL publique du serveur, pour construire les liens de téléchargement. Sur Render, `RENDER_EXTERNAL_URL` (fournie automatiquement) sert de repli — inutile de la définir là. Ailleurs, ou pour la surcharger, la définir explicitement (ex. `https://plan-validation-mcp.exemple.com`). |
 | `PORT` | Non | Port d'écoute (8000 par défaut ; Render le fournit automatiquement). |
 
@@ -126,7 +134,7 @@ jamais recevoir le jeton Bearer serveur-à-serveur.
 
 ```bash
 pip install -r mcp_server/requirements.txt
-MCP_AUTH_TOKEN=un-secret-de-test python -m mcp_server.server
+MCP_AUTH_TOKEN=un-secret-de-test PDF_UPLOAD_TOKEN=un-autre-secret-de-test python -m mcp_server.server
 # écoute sur http://127.0.0.1:8000/mcp
 ```
 
@@ -162,6 +170,7 @@ sautés silencieusement si elle est absente.
 docker build -f mcp_server/Dockerfile -t plan-validation-mcp .
 docker run --rm -p 8000:8000 \
   -e MCP_AUTH_TOKEN=un-secret-de-test \
+  -e PDF_UPLOAD_TOKEN=un-autre-secret-de-test \
   -e MCP_PUBLIC_BASE_URL=http://127.0.0.1:8000 \
   plan-validation-mcp
 ```
@@ -178,16 +187,26 @@ confirmer avant le premier déploiement, cf. « Limites connues » ci-dessous.
 
 Comme l'app Streamlit, via le `render.yaml` à la racine du dépôt (Blueprint) :
 le service `plan-validation-mcp` y est déjà décrit (`dockerfilePath:
-mcp_server/Dockerfile`, `dockerContext: .`). Au moment de la création à
-partir du Blueprint, Render demande la valeur de `MCP_AUTH_TOKEN` (jamais
-commitée) — choisir un jeton long et aléatoire (ex. `openssl rand -hex 32`).
-`MCP_PUBLIC_BASE_URL` n'a pas besoin d'être définie : Render fournit
-`RENDER_EXTERNAL_URL` automatiquement, utilisée en repli.
+mcp_server/Dockerfile`, `dockerContext: .`). À la création d'un NOUVEAU
+service à partir du Blueprint, Render demande la valeur de `MCP_AUTH_TOKEN`
+ET `PDF_UPLOAD_TOKEN` (jamais commitées, deux jetons DISTINCTS — cf. section
+« Le PDF fabricant en entrée ») — choisir deux jetons longs et aléatoires
+(ex. `openssl rand -hex 32`, une fois chacun). `MCP_PUBLIC_BASE_URL` n'a pas
+besoin d'être définie : Render fournit `RENDER_EXTERNAL_URL` automatiquement,
+utilisée en repli.
+
+⚠️ **Sur un service DÉJÀ déployé** (ce qui est le cas de
+`plan-validation-mcp` au moment où `PDF_UPLOAD_TOKEN` a été introduit) :
+Render ne redemande PAS les variables du Blueprint après la création
+initiale — ajouter `PDF_UPLOAD_TOKEN` **manuellement** dans le dashboard
+Render (service → **Environment**) AVANT de déployer un commit qui
+l'exige, sous peine de boucle de crash au démarrage (`jeton_upload_attendu`
+lève `RuntimeError` si absent).
 
 Sans Blueprint : créer manuellement un **Web Service**, environnement
 **Docker**, Dockerfile Path = `mcp_server/Dockerfile`, Docker Build Context
-Directory = `.` (racine), puis ajouter `MCP_AUTH_TOKEN` dans **Environment**
-avant le premier déploiement.
+Directory = `.` (racine), puis ajouter `MCP_AUTH_TOKEN` ET `PDF_UPLOAD_TOKEN`
+dans **Environment** avant le premier déploiement.
 
 Mêmes limites de palier gratuit que l'app Streamlit (mise en veille après
 ~15 min d'inactivité, 512 Mo de RAM) — cf. README racine, section
@@ -199,26 +218,39 @@ Dans la configuration d'un agent Dust, ajouter un serveur MCP personnalisé :
 
 - **URL** : `https://<nom-du-service>.onrender.com/mcp`
 - **Authentification** : Bearer, jeton = la valeur de `MCP_AUTH_TOKEN`
+  (**jamais** `PDF_UPLOAD_TOKEN` ici — ce dernier n'ouvre PAS `/mcp`, cf.
+  section « Le PDF fabricant en entrée »)
 
 Le serveur (`mcp_server/server.py::_INSTRUCTIONS`) explique déjà à l'agent,
 via le protocole MCP lui-même, qu'il doit téléverser le PDF par `curl` avant
-d'appeler `inventaire_pdf`. Mais si l'agent a besoin d'une consigne plus
-explicite dans ses propres instructions Dust (ex. s'il continue de tenter du
-base64 malgré tout), une formulation possible à y ajouter :
+d'appeler `inventaire_pdf` — avec un placeholder `<PDF_UPLOAD_TOKEN>` qu'il
+ne peut pas résoudre seul. Si l'agent a besoin d'une consigne plus explicite
+(ex. il continue de tenter du base64 malgré tout), coller ceci dans ses
+propres instructions Dust, **avec la valeur réelle de `PDF_UPLOAD_TOKEN` en
+clair** (jamais celle de `MCP_AUTH_TOKEN` — cf. avertissement ci-dessous) :
 
 > Pour traiter un PDF fabricant joint à la conversation, NE l'encode JAMAIS
 > toi-même en base64. Exécute d'abord, dans ton environnement d'exécution :
 > `curl -X POST https://<nom-du-service>.onrender.com/pdfs -H "Authorization:
-> Bearer <MCP_AUTH_TOKEN>" -F pdf=@<chemin_local_du_fichier>.pdf` — la
-> réponse contient `pdf_id`. Utilise ensuite ce `pdf_id` (jamais de base64)
-> dans `inventaire_pdf` puis dans chaque `extraire_page`.
+> Bearer <PDF_UPLOAD_TOKEN_EN_CLAIR>" -F pdf=@<chemin_local_du_fichier>.pdf`
+> — la réponse contient `pdf_id`. Utilise ensuite ce `pdf_id` (jamais de
+> base64) dans `inventaire_pdf` puis dans chaque `extraire_page`.
 
-⚠️ Point non vérifiable depuis ce dépôt : que l'exécution en bac à sable de
-l'agent Dust ait bien accès à la valeur de `MCP_AUTH_TOKEN` pour la mettre
-dans cette commande `curl`. Si ce n'est pas le cas (l'agent n'a accès qu'au
-jeton utilisé en interne pour les appels d'outils MCP, pas à une variable
-qu'il peut réinjecter dans une commande shell), il faudra un autre mécanisme
-de transmission du jeton à l'agent — à confirmer par un essai réel.
+⚠️ **Pourquoi un jeton dédié plutôt que `MCP_AUTH_TOKEN`** : coller cette
+formulation dans les instructions d'un agent Dust rend le jeton visible en
+clair par quiconque a accès en édition à cet agent — aucun mécanisme de
+secret injectable dans le bac à sable n'a été trouvé côté Dust (deux
+recherches ciblées, sans résultat) au moment d'écrire ceci. `PDF_UPLOAD_TOKEN`
+est donc un jeton à portée réduite, généré et défini UNIQUEMENT pour cet
+usage : sa fuite éventuelle ne donne accès qu'à l'upload de PDF, jamais aux
+autres outils (`exporter_pdf` compris), qui restent protégés par
+`MCP_AUTH_TOKEN` — jamais collé dans un texte d'agent. Si une preuve d'un
+mécanisme de secret Dust apparaît plus tard, réévaluer cette formulation.
+
+⚠️ Point restant, non vérifiable depuis ce dépôt : que le bac à sable de
+l'agent Dust puisse bien EXÉCUTER une commande shell (`curl`) — pas une
+question d'accès à un secret (résolue ci-dessus), mais de capacité
+d'exécution shell tout court. À confirmer par l'essai réel.
 
 ## Limites connues (honnêtes)
 

@@ -8,9 +8,18 @@ d'état business caché entre deux appels) — SAUF le PDF fabricant en entrée,
 mis en cache côté serveur le temps d'un pipeline (mcp_server/pdf_cache.py) :
 un agent Dust réel n'a souvent aucun moyen de produire lui-même le base64
 attendu par un appel d'outil MCP, d'où le point d'entrée d'upload direct
-`POST /pdfs`, hors canal MCP. Accès protégé par jeton Bearer
-(MCP_AUTH_TOKEN), vérifié sur CHAQUE requête (mcp_server/auth.py, y compris
-`/pdfs`) — le serveur refuse de démarrer si ce jeton n'est pas défini.
+`POST /pdfs`, hors canal MCP.
+
+DEUX jetons Bearer DISTINCTS (mcp_server/auth.py), vérifiés sur CHAQUE
+requête — le serveur refuse de démarrer si l'un des deux est absent/vide :
+`MCP_AUTH_TOKEN` protège `/mcp` (tous les outils), `PDF_UPLOAD_TOKEN`
+protège UNIQUEMENT `POST /pdfs`. Portées volontairement séparées :
+`PDF_UPLOAD_TOKEN` est destiné à apparaître en clair dans les instructions
+d'un agent Dust (aucun mécanisme de secret injectable trouvé côté Dust), sa
+fuite est donc une éventualité réaliste — un jeton à portée réduite limite
+les dégâts à « peut téléverser des PDF », jamais à « peut appeler
+exporter_pdf ». `MCP_AUTH_TOKEN`, lui, n'apparaît jamais dans un texte
+destiné à être collé où que ce soit.
 """
 import os
 from urllib.parse import urlparse
@@ -22,7 +31,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from . import fichiers, pdf_cache, util
-from .auth import BearerAuthMiddleware, jeton_attendu
+from .auth import BearerAuthMiddleware, jeton_attendu, jeton_upload_attendu
 from .tools import assemblage, export, extraction, inventaire, traduction, verification
 
 _INSTRUCTIONS = (
@@ -37,9 +46,9 @@ _INSTRUCTIONS = (
     "(4) le PDF fabricant fourni par l'utilisateur ne s'encode PAS en base64 "
     "à la main : téléversez-le d'abord par une commande shell dans votre bac "
     f"à sable, ex. curl -X POST {fichiers.base_url_publique()}{pdf_cache.PREFIXE_ROUTE} "
-    "-H 'Authorization: Bearer <MCP_AUTH_TOKEN>' -F pdf=@<chemin_du_fichier>.pdf "
-    "(même jeton Bearer que pour les appels d'outils), qui retourne "
-    "{pdf_id, expire_dans_s} ; réutilisez ce pdf_id tel quel pour "
+    "-H 'Authorization: Bearer <PDF_UPLOAD_TOKEN>' -F pdf=@<chemin_du_fichier>.pdf "
+    "(jeton DISTINCT de celui des appels d'outils, portée réduite à "
+    "l'upload), qui retourne {pdf_id, expire_dans_s} ; réutilisez ce pdf_id tel quel pour "
     "inventaire_pdf PUIS chaque extraire_page, jamais de base64 manuel. "
     "Ordre d'appel attendu : POST /pdfs (obtenir pdf_id) -> "
     "inventaire_pdf(pdf_id=...) (classer les pages) -> "
@@ -86,11 +95,15 @@ async def televerser_pdf(request: Request) -> Response:
     """Upload direct d'un PDF fabricant, HORS du canal MCP (pas de limite
     ~1 Mio de réponse d'outil, pas de base64 à produire côté agent) — cf.
     mcp_server/pdf_cache.py pour pourquoi ce point d'entrée existe. Reçoit
-    un `multipart/form-data` avec un champ `pdf` (le fichier). PROTÉGÉ par le
-    même jeton Bearer que `/mcp` (contrairement à `/fichiers/...` : ceci est
-    un point d'entrée serveur-à-serveur, jamais cliqué par l'utilisateur
-    final). Retourne {"pdf_id", "expire_dans_s"} à passer tel quel à
-    `inventaire_pdf`/`extraire_page` à la place de `pdf_base64`."""
+    un `multipart/form-data` avec un champ `pdf` (le fichier). PROTÉGÉ par
+    PDF_UPLOAD_TOKEN — un jeton DISTINCT de MCP_AUTH_TOKEN (mcp_server/auth.py),
+    à portée réduite à ce seul point d'entrée (contrairement à
+    `/fichiers/...`, lui volontairement EXEMPTÉ de tout jeton : ceci reste un
+    point d'entrée serveur-à-serveur, jamais cliqué par l'utilisateur final,
+    mais avec son propre jeton parce que PDF_UPLOAD_TOKEN est destiné à être
+    collé en clair dans les instructions d'un agent Dust). Retourne
+    {"pdf_id", "expire_dans_s"} à passer tel quel à `inventaire_pdf`/
+    `extraire_page` à la place de `pdf_base64`."""
     longueur = request.headers.get("content-length")
     if longueur is not None and int(longueur) > TAILLE_MAX_REQUETE_OCTETS:
         return JSONResponse({"error": "corps de requête trop volumineux"}, status_code=413)
@@ -140,10 +153,12 @@ def _parametres_securite_transport() -> TransportSecuritySettings:
 
 
 def construire_app():
-    """Construit l'app ASGI (Starlette) du serveur MCP, protégée par le
-    jeton Bearer. Lève RuntimeError si MCP_AUTH_TOKEN est absent/vide —
-    appelé au démarrage, jamais de service exposé sans jeton défini."""
+    """Construit l'app ASGI (Starlette) du serveur MCP, protégée par DEUX
+    jetons Bearer distincts (mcp_server/auth.py). Lève RuntimeError si
+    MCP_AUTH_TOKEN OU PDF_UPLOAD_TOKEN est absent/vide — appelé au
+    démarrage, jamais de service exposé sans les deux jetons définis."""
     jeton = jeton_attendu()
+    jeton_upload = jeton_upload_attendu()
     # stateless_http=False (défaut) : le protocole MCP garde une session
     # légère (Mcp-Session-Id) pendant la durée d'UNE connexion client — c'est
     # le mécanisme de transport (achemine les réponses SSE), pas un état
@@ -156,7 +171,10 @@ def construire_app():
         max_request_body_size=TAILLE_MAX_REQUETE_OCTETS,
         transport_security=_parametres_securite_transport(),
     )
-    app.add_middleware(BearerAuthMiddleware, jeton=jeton, prefixes_exemptes=(fichiers.PREFIXE_ROUTE,))
+    app.add_middleware(
+        BearerAuthMiddleware, jeton=jeton, prefixes_exemptes=(fichiers.PREFIXE_ROUTE,),
+        jetons_par_prefixe={pdf_cache.PREFIXE_ROUTE: jeton_upload},
+    )
     return app
 
 
