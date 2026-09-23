@@ -10,9 +10,11 @@ Accès protégé par jeton Bearer (MCP_AUTH_TOKEN), vérifié sur CHAQUE requêt
 défini.
 """
 import os
+from urllib.parse import urlparse
 
 import uvicorn
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -76,6 +78,30 @@ async def telecharger_fichier(request: Request) -> Response:
 TAILLE_MAX_REQUETE_OCTETS = 90_000_000
 
 
+def _parametres_securite_transport() -> TransportSecuritySettings:
+    """Hôtes/Origins autorisés pour la protection anti DNS-rebinding du SDK
+    mcp. `streamable_http_app()` ne l'auto-active QUE quand `host` vaut son
+    défaut "127.0.0.1" (cf. mcp.server.lowlevel.server) — comme nous ne lui
+    passons jamais ce paramètre, elle se déclenchait quand même avec une
+    liste d'hôtes limitée à localhost, rejetant en production toute requête
+    dont le Host réel (ex: plan-validation-mcp.onrender.com) n'y figurait
+    pas ("Invalid Host header"). On la déclare nous-mêmes pour couvrir à la
+    fois les tests locaux (127.0.0.1/localhost) et le domaine public réel
+    (cf. fichiers.base_url_publique), sans désactiver la protection."""
+    hotes = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    origines = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
+    url_publique = fichiers.base_url_publique().rstrip("/")
+    hote_public = urlparse(url_publique).netloc
+    if hote_public and hote_public not in hotes:
+        hotes.append(hote_public)
+        origines.append(url_publique)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hotes,
+        allowed_origins=origines,
+    )
+
+
 def construire_app():
     """Construit l'app ASGI (Starlette) du serveur MCP, protégée par le
     jeton Bearer. Lève RuntimeError si MCP_AUTH_TOKEN est absent/vide —
@@ -91,6 +117,7 @@ def construire_app():
     # cachées entre deux appels — pas sur ce mécanisme de transport.
     app = server.streamable_http_app(
         max_request_body_size=TAILLE_MAX_REQUETE_OCTETS,
+        transport_security=_parametres_securite_transport(),
     )
     app.add_middleware(BearerAuthMiddleware, jeton=jeton, prefixes_exemptes=(fichiers.PREFIXE_ROUTE,))
     return app
