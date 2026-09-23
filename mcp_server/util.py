@@ -3,13 +3,15 @@
 mcp_server/util.py — utilitaires communs aux outils MCP : décodage/encodage
 base64, limite de taille des PDF (même règle que l'app Streamlit,
 LIMITE_PDF_MO), résolution du PDF d'entrée (base64 direct OU pdf_id mis en
-cache, cf. `resoudre_pdf`), et dossier de travail par appel. `core/etat.py`
-n'est pas réutilisable ici : il est conçu autour de `st.session_state` (un
-dossier par SESSION Streamlit) alors qu'un outil MCP crée son propre dossier
-jetable et le détruit avant de renvoyer sa réponse — jamais partagé avec
-l'appel suivant. Le PDF fabricant lui-même fait exception à ce principe
-(cf. mcp_server/pdf_cache.py) : `resoudre_pdf` est le point d'entrée commun
-qui l'assume.
+cache, cf. `resoudre_pdf`), résolution des données de mots extraits (JSON
+direct OU extraction_id mis en cache, cf. `resoudre_words_data`), et dossier
+de travail par appel. `core/etat.py` n'est pas réutilisable ici : il est
+conçu autour de `st.session_state` (un dossier par SESSION Streamlit) alors
+qu'un outil MCP crée son propre dossier jetable et le détruit avant de
+renvoyer sa réponse — jamais partagé avec l'appel suivant. Le PDF fabricant
+et les données de mots extraits font exception à ce principe (cf.
+mcp_server/pdf_cache.py, mcp_server/extraction_cache.py) : les fonctions
+`resoudre_*` de ce module sont le point d'entrée commun qui l'assume.
 """
 import base64
 import shutil
@@ -17,7 +19,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import pdf_cache
+from . import extraction_cache, pdf_cache
 
 # Même limite que app.py::LIMITE_PDF_MO (app Streamlit) — un PDF fabricant
 # plus gros risque de saturer la mémoire du conteneur avant même l'extraction.
@@ -70,6 +72,85 @@ def resoudre_pdf(pdf_base64: str | None, pdf_id: str | None) -> tuple[bytes, str
         return contenu, pdf_id
     contenu = decoder_pdf(pdf_base64)
     return contenu, pdf_cache.mettre_en_cache(contenu)["pdf_id"]
+
+
+_CHAMPS_MOT_REQUIS = (
+    "block_no", "line_no", "word_no", "num", "translatable",
+    "text", "bbox", "rotation_deg", "suffix_bbox", "suffix_en",
+)
+
+
+def valider_words_data(words_data: dict) -> None:
+    """Valide la structure minimale de `words_data` (sortie attendue
+    d'`extraire_page`, ou de la réponse complète mise en cache sous
+    `extraction_id`) AVANT tout traitement. Remplace un KeyError/TypeError
+    opaque en cas de structure malformée — ex. reconstruite à la main par un
+    agent qui a buté sur la taille du JSON complet (cf.
+    mcp_server/extraction_cache.py) — par une erreur explicite nommant le
+    champ en cause. Lève ValueError, jamais un échec silencieux."""
+    if not isinstance(words_data, dict):
+        raise ValueError(f"words_data doit être un objet JSON, reçu : {type(words_data).__name__}.")
+    if "page_size_pts" not in words_data:
+        raise ValueError("words_data invalide : champ 'page_size_pts' manquant.")
+    taille = words_data["page_size_pts"]
+    if not (isinstance(taille, (list, tuple)) and len(taille) == 2):
+        raise ValueError(f"words_data invalide : 'page_size_pts' doit être [largeur, hauteur], reçu : {taille!r}.")
+    if "words" not in words_data:
+        raise ValueError("words_data invalide : champ 'words' manquant.")
+    mots = words_data["words"]
+    if not isinstance(mots, list):
+        raise ValueError(f"words_data invalide : 'words' doit être une liste, reçu : {type(mots).__name__}.")
+    for i, mot in enumerate(mots):
+        if not isinstance(mot, dict):
+            raise ValueError(f"words_data invalide : words[{i}] doit être un objet, reçu : {type(mot).__name__}.")
+        manquants = [c for c in _CHAMPS_MOT_REQUIS if c not in mot]
+        if manquants:
+            raise ValueError(
+                f"words_data invalide : words[{i}] (text={mot.get('text')!r}) — "
+                f"champ(s) manquant(s) : {manquants}."
+            )
+
+
+def resoudre_words_data(words_data: dict | None, extraction_id: str | None) -> dict:
+    """Résout les données de mots d'une page pour un outil qui accepte soit
+    `extraction_id` (chemin NORMAL pour un agent Dust réel : données déjà en
+    cache, retournées par un appel précédent d'`extraire_page` — cf.
+    mcp_server/extraction_cache.py), soit `words_data` en repli (petits
+    fichiers, tests directs). Exactement un des deux doit être fourni.
+    Valide la structure résolue avant de la retourner (`valider_words_data`)."""
+    if bool(words_data) == bool(extraction_id):
+        raise ValueError("fournir exactement un de words_data ou extraction_id (pas les deux, pas aucun).")
+    if extraction_id:
+        resolu = extraction_cache.recuperer(extraction_id)
+        if resolu is None:
+            raise ValueError(f"extraction_id {extraction_id!r} inconnu ou expiré — relancez extraire_page.")
+    else:
+        resolu = words_data
+    valider_words_data(resolu)
+    return resolu
+
+
+def resoudre_entree_words_par_page(valeur) -> dict:
+    """Résout UNE entrée de `words_par_page` (`verifier_rendu`) : soit un
+    `extraction_id` (str, chemin NORMAL — cf. `resoudre_words_data`), soit
+    directement `words_data`/la réponse complète d'`extraire_page` en repli.
+    Même famille de problème que `resoudre_pdf`/`resoudre_words_data` : évite
+    à l'agent de devoir AGRÉGER et retransmettre le JSON complet de chaque
+    page retenue (pire cas — plusieurs pages à la fois) pour activer le
+    contrôle de cotes."""
+    if isinstance(valeur, str):
+        resolu = extraction_cache.recuperer(valeur)
+        if resolu is None:
+            raise ValueError(f"extraction_id {valeur!r} inconnu ou expiré dans words_par_page — relancez extraire_page.")
+    elif isinstance(valeur, dict):
+        resolu = valeur
+    else:
+        raise ValueError(
+            f"words_par_page : chaque valeur doit être un extraction_id (str) ou un objet, "
+            f"reçu : {type(valeur).__name__}."
+        )
+    valider_words_data(resolu)
+    return resolu
 
 
 def encoder_fichier(chemin: Path) -> str:

@@ -16,15 +16,22 @@ def verifier_rendu(pptx_base64: str, words_par_page: dict = None, meta: dict = N
     DOIVENT être montrées à l'utilisateur AVANT toute validation (règle
     absolue n°3). Calcule aussi le rapport de vérification programmatique.
 
-    `words_par_page` (optionnel) : {"<page_num>": words_data, ...}, agrégé
-    par l'appelant depuis les réponses de `extraire_page` sur les planches
-    dessin. Fourni, il active le CONTRÔLE DE COTES (confronte les nombres du
-    PDF fabricant source à ceux du PPTX généré) — le contrôle programmatique
-    le plus important du pipeline, puisqu'il n'y a ici aucun état côté
-    serveur reliant ce PPTX à son PDF source. Sans lui, `rapport_cotes` est
-    `null` : seul un contrôle de complétude générique est fait (cartouche
-    sans résidu d'un ancien projet, deux contacts présents, aucun bloc de
-    specs résiduel) — PAS de contrôle "ce cartouche correspond à ce projet".
+    `words_par_page` (optionnel) : {"<page_num>": extraction_id | words_data,
+    ...}, agrégé par l'appelant depuis les réponses de `extraire_page` sur
+    les planches dessin — chaque valeur est SOIT l'`extraction_id` retourné
+    par `extraire_page` (chemin NORMAL : ne transmet PAS le JSON complet),
+    SOIT `words_data`/la réponse complète en repli (petits fichiers, tests
+    directs). NE RECONSTRUISEZ JAMAIS ces données à la main : agréger
+    plusieurs pages en JSON complet est le pire cas du problème de taille
+    déjà rencontré sur `traduire_mots` — passez les `extraction_id` tels
+    quels. Fourni, `words_par_page` active le CONTRÔLE DE COTES (confronte
+    les nombres du PDF fabricant source à ceux du PPTX généré) — le contrôle
+    programmatique le plus important du pipeline, puisqu'il n'y a ici aucun
+    état côté serveur reliant ce PPTX à son PDF source. Sans lui,
+    `rapport_cotes` est `null` : seul un contrôle de complétude générique est
+    fait (cartouche sans résidu d'un ancien projet, deux contacts présents,
+    aucun bloc de specs résiduel) — PAS de contrôle "ce cartouche correspond
+    à ce projet".
 
     `meta` (optionnel, {"numero", "client", ...}) : fourni, active en plus la
     vérification que le numéro d'affaire et le client saisis apparaissent
@@ -41,6 +48,13 @@ def verifier_rendu(pptx_base64: str, words_par_page: dict = None, meta: dict = N
     que le PDF exporté correspond exactement à CE PPTX-ci, vu et validé par
     l'utilisateur sur ces images.
     """
+    # Résolu AVANT le rendu (PowerPoint/LibreOffice, coûteux et parfois
+    # fragile) : un extraction_id inconnu/expiré ou un words_data malformé
+    # doit échouer immédiatement, pas après avoir gaspillé un rendu complet.
+    wpp = None
+    if words_par_page:
+        wpp = {int(n): util.resoudre_entree_words_par_page(v) for n, v in words_par_page.items()}
+
     contenu = base64.b64decode(pptx_base64, validate=True)
     pptx_sha256 = hashlib.sha256(contenu).hexdigest()
 
@@ -57,8 +71,7 @@ def verifier_rendu(pptx_base64: str, words_par_page: dict = None, meta: dict = N
         alertes_completude = verify.controle_completude(pptx_path, meta or {})
 
         rapport_cotes = None
-        if words_par_page:
-            wpp = {int(n): wd_page for n, wd_page in words_par_page.items()}
+        if wpp is not None:
             rapport_cotes = verify.controle_cotes(wpp, pptx_path)
 
         return {

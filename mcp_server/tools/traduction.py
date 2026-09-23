@@ -4,13 +4,27 @@ from typing import Any
 
 from core import translate
 
+from .. import util
 
-def traduire_mots(words_data: dict, role: str = "planche", glossaire_version: str = "latest") -> dict[str, Any]:
+
+def traduire_mots(
+    *, extraction_id: str | None = None, words_data: dict | None = None,
+    role: str = "planche", glossaire_version: str = "latest",
+) -> dict[str, Any]:
     """Applique le glossaire Vertical aux mots d'UNE page déjà extraite
     (`extraire_page`). `role` doit correspondre à celui utilisé à
     l'extraction : "planche" (planche dessin cotée) ou "specs" (page qui
     alimente le tableau specs) — "garde" n'a rien à traduire en place (la vue
     3D fournisseur n'est jamais traduite : limite connue, cf. README).
+
+    Fournissez EXACTEMENT UN des deux : `extraction_id` (chemin NORMAL,
+    retourné par `extraire_page`) ou `words_data` (repli, petits fichiers /
+    tests directs). NE RECONSTRUISEZ JAMAIS `words_data` à la main pour
+    relayer la sortie d'`extraire_page` — passez `extraction_id` tel quel ;
+    un agent Dust réel a buté sur la taille de ce JSON en tentant de le
+    retransmettre en argument. Toute structure invalide (champ manquant,
+    type incorrect) est rejetée avec une erreur explicite nommant le champ
+    en cause — jamais un échec silencieux.
 
     Regroupement en phrases (pas seulement des étiquettes isolées) : les
     mots sont reconstitués en lignes de lecture du PDF (block/line/word),
@@ -41,6 +55,8 @@ def traduire_mots(words_data: dict, role: str = "planche", glossaire_version: st
         )
     if role not in ("planche", "specs"):
         raise ValueError(f"role invalide pour la traduction : {role!r} (attendu : planche, specs).")
+
+    words_data = util.resoudre_words_data(words_data, extraction_id)
 
     if role == "planche":
         labels, hors_glossaire = translate.traduire_labels_planche(words_data)

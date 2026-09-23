@@ -4,11 +4,16 @@ mcp_server/server.py — serveur MCP « Plan de Validation Vertical », pour
 exposer le pipeline (core/) comme des outils utilisables par un agent Dust.
 
 Chaque outil reçoit et renvoie ses données métier explicitement (jamais
-d'état business caché entre deux appels) — SAUF le PDF fabricant en entrée,
-mis en cache côté serveur le temps d'un pipeline (mcp_server/pdf_cache.py) :
-un agent Dust réel n'a souvent aucun moyen de produire lui-même le base64
-attendu par un appel d'outil MCP, d'où le point d'entrée d'upload direct
-`POST /pdfs`, hors canal MCP.
+d'état business caché entre deux appels) — SAUF deux exceptions, mises en
+cache côté serveur le temps d'un pipeline : le PDF fabricant en entrée
+(mcp_server/pdf_cache.py) et les données de mots extraits par page
+(mcp_server/extraction_cache.py). Dans les deux cas, un agent Dust réel n'a
+pas les moyens de relayer le JSON/base64 complet d'un appel d'outil à
+l'autre (constaté en conditions réelles : base64 impossible à produire pour
+le PDF, JSON trop volumineux à retransmettre pour les mots extraits d'une
+page dense) — d'où le point d'entrée d'upload direct `POST /pdfs` (hors
+canal MCP) pour le PDF, et les identifiants `pdf_id`/`extraction_id` à
+réutiliser tels quels pour tout le reste.
 
 DEUX jetons Bearer DISTINCTS (mcp_server/auth.py), vérifiés sur CHAQUE
 requête — le serveur refuse de démarrer si l'un des deux est absent/vide :
@@ -49,14 +54,21 @@ _INSTRUCTIONS = (
     "-H 'Authorization: Bearer <PDF_UPLOAD_TOKEN>' -F pdf=@<chemin_du_fichier>.pdf "
     "(jeton DISTINCT de celui des appels d'outils, portée réduite à "
     "l'upload), qui retourne {pdf_id, expire_dans_s} ; réutilisez ce pdf_id tel quel pour "
-    "inventaire_pdf PUIS chaque extraire_page, jamais de base64 manuel. "
+    "inventaire_pdf PUIS chaque extraire_page, jamais de base64 manuel ; "
+    "(5) la réponse d'extraire_page (words) ne se recopie PAS non plus à la "
+    "main dans les appels suivants : elle inclut extraction_id, à réutiliser "
+    "tel quel dans traduire_mots puis dans words_par_page de verifier_rendu "
+    "(un JSON de mots reconstruit à la main a déjà fait échouer un pipeline "
+    "réel). "
     "Ordre d'appel attendu : POST /pdfs (obtenir pdf_id) -> "
     "inventaire_pdf(pdf_id=...) (classer les pages) -> "
-    "extraire_page(pdf_id=...) pour chaque page retenue "
-    "(role='garde'|'planche'|'specs') "
-    "-> traduire_mots sur les pages 'planche' et 'specs' -> assembler_pptx "
-    "-> verifier_rendu (montrer les images produites à l'utilisateur et "
-    "obtenir son accord explicite) -> exporter_pdf (valide=True seulement "
+    "extraire_page(pdf_id=...) pour chaque page retenue (role="
+    "'garde'|'planche'|'specs', obtenir extraction_id) -> "
+    "traduire_mots(extraction_id=...) sur les pages 'planche' et 'specs' "
+    "-> assembler_pptx "
+    "-> verifier_rendu(words_par_page={page: extraction_id, ...}) (montrer "
+    "les images produites à l'utilisateur et obtenir son accord explicite) "
+    "-> exporter_pdf (valide=True seulement "
     "après cet accord)."
 )
 

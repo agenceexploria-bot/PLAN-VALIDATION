@@ -22,18 +22,19 @@ même code `core/`, jamais le même déploiement.
 | Outil | Étape | Rôle |
 |---|---|---|
 | `inventaire_pdf` | 1 | Nombre de pages, taille, aperçu basse résolution — pour classer les pages ; met le PDF en cache et retourne `pdf_id` |
-| `extraire_page` | 2 | Rendu + mots détectés d'UNE page (`role="planche"\|"garde"\|"specs"`), référencée par `pdf_id` |
-| `traduire_mots` | 3 | Glossaire Vertical appliqué aux mots d'une page déjà extraite |
+| `extraire_page` | 2 | Rendu + mots détectés d'UNE page (`role="planche"\|"garde"\|"specs"`), référencée par `pdf_id` ; met sa réponse en cache et retourne `extraction_id` |
+| `traduire_mots` | 3 | Glossaire Vertical appliqué aux mots d'une page déjà extraite, référencée par `extraction_id` |
 | `assembler_pptx` | 4 | Montage du PPTX (copie d'un plan existant, jamais un template vide) |
-| `verifier_rendu` | 5 | Rendu par slide (LibreOffice) + rapport de vérification — portail obligatoire |
+| `verifier_rendu` | 5 | Rendu par slide (LibreOffice) + rapport de vérification — portail obligatoire ; `words_par_page` référencée par `extraction_id` |
 | `exporter_pdf` | 6 | Export PDF final, refuse sans `valide=True` |
 
 Chaque outil a une description détaillée dans son propre docstring
 (`mcp_server/tools/*.py`) — c'est ce que l'agent Dust lit pour savoir quand
 et comment l'utiliser. Ordre d'appel attendu : `inventaire_pdf` →
-`extraire_page` (par page retenue) → `traduire_mots` → `assembler_pptx` →
-`verifier_rendu` (montrer les images à l'utilisateur, obtenir son accord) →
-`exporter_pdf`.
+`extraire_page` (par page retenue, obtenir `extraction_id`) →
+`traduire_mots(extraction_id=...)` → `assembler_pptx` →
+`verifier_rendu(words_par_page={page: extraction_id, ...})` (montrer les
+images à l'utilisateur, obtenir son accord) → `exporter_pdf`.
 
 ## Le PDF fabricant en entrée : téléversé une seule fois hors canal MCP, référencé par `pdf_id`
 
@@ -93,6 +94,42 @@ explicitement (`ValueError`) — il suffit de retéléverser le PDF.
 - Contrairement au registre de téléchargement (`fichiers.py`, usage
   UNIQUE), le cache PDF est **réutilisable** (une lecture par page) et son
   expiration **glisse** à chaque lecture.
+
+## Les mots extraits d'une page : mis en cache, référencés par `extraction_id`
+
+Même famille de problème que le PDF, trouvée juste après en conditions
+réelles : `traduire_mots` rejetait les données d'une page dense **sans
+message exploitable**. En cause : l'agent Dust tentait de RETRANSMETTRE le
+`words_data` complet (sortie d'`extraire_page`) en argument de
+`traduire_mots`, butait sur la taille du JSON, et commençait à le
+reconstruire manuellement plutôt que de le relayer tel quel — exactement la
+même dérive que celle vue sur le PDF (contournements dangereux plutôt qu'un
+appel d'outil normal).
+
+`extraire_page` met donc sa réponse complète en cache côté serveur
+(`mcp_server/extraction_cache.py`, 30 min glissantes) et retourne un
+`extraction_id` EN PLUS du contenu inline (`words`, `page_size_pts` —
+conservés : ce n'est pas leur RÉCEPTION qui posait problème, seulement leur
+RETRANSMISSION). `traduire_mots` et `verifier_rendu` (`words_par_page` —
+qui AGRÈGE plusieurs pages, pire cas encore) acceptent cet `extraction_id`
+à la place du JSON complet — cf. `mcp_server/util.py::resoudre_words_data`
+et `resoudre_entree_words_par_page`. `words_data` reste accepté en repli
+sur les deux (petits fichiers, tests directs).
+
+Corrigé au passage (bug indépendant de la cause de fond, présent AVANT ce
+mécanisme) : un `words_data` malformé renvoie désormais toujours une erreur
+explicite nommant le champ en cause (`util.valider_words_data`) — jamais un
+`KeyError`/`TypeError` opaque, jamais un échec silencieux. `verifier_rendu`
+résout aussi `words_par_page` AVANT le rendu PowerPoint/LibreOffice
+(coûteux et parfois fragile), pas après : un `extraction_id` invalide
+échoue immédiatement plutôt que de gaspiller un rendu complet.
+
+⚠️ Décision assumée, identique à celle du PDF : cache en mémoire (pas sur
+disque, contrairement à `pdf_cache.py` — `words_data` est du JSON structuré,
+sans commune mesure avec un PDF de 50 Mo), réutilisable, expiration
+glissante. Rien à purger au démarrage (rien n'est écrit sur disque) — un
+redémarrage du process vide simplement le registre, comme pour le reste de
+l'état en mémoire (registre de téléchargement, cache PDF).
 
 ## Fichiers binaires en sortie : des URLs, jamais du contenu inline
 
@@ -264,18 +301,22 @@ d'exécution shell tout court. À confirmer par l'essai réel.
 - **Vue 3D fournisseur non traduite** (callouts) : limite déjà connue du
   pipeline `core/`, pas spécifique au serveur MCP — cf. README racine.
 - **Un seul process, sans état partagé entre appels — sauf le PDF fabricant
-  en cache** (voir `mcp_server/util.py`) : chaque appel a son propre dossier
-  de travail jetable. Le registre de fichiers publiés (`mcp_server/fichiers.py`)
-  et le cache du PDF en cours (`mcp_server/pdf_cache.py`, cf. section
-  « Le PDF fabricant en entrée » ci-dessus), eux, vivent en mémoire du
-  process — un redémarrage du service (déploiement, mais aussi OOM-kill
-  Render, déjà observé sur ce projet) invalide tous les liens de
-  téléchargement en attente (acceptable : durée de vie 5 min) ET tout
-  `pdf_id` en cours (acceptable : il suffit de relancer `inventaire_pdf`).
-  Les fichiers laissés sur disque par l'instance précédente sont nettoyés au
-  démarrage du process suivant (`fichiers.purger_dossiers_orphelins_au_demarrage`
-  et `pdf_cache.purger_dossiers_orphelins_au_demarrage`), pas de fuite
-  accumulée entre redémarrages.
+  et les données de mots extraits en cache** (voir `mcp_server/util.py`) :
+  chaque appel a son propre dossier de travail jetable. Le registre de
+  fichiers publiés (`mcp_server/fichiers.py`), le cache du PDF en cours
+  (`mcp_server/pdf_cache.py`) et le cache des extractions en cours
+  (`mcp_server/extraction_cache.py`, cf. sections ci-dessus), eux, vivent en
+  mémoire du process — un redémarrage du service (déploiement, mais aussi
+  OOM-kill Render, déjà observé sur ce projet) invalide tous les liens de
+  téléchargement en attente (acceptable : durée de vie 5 min), tout `pdf_id`
+  en cours (acceptable : il suffit de relancer `inventaire_pdf`) ET tout
+  `extraction_id` en cours (acceptable : il suffit de relancer
+  `extraire_page`). Les fichiers laissés sur disque par l'instance
+  précédente sont nettoyés au démarrage du process suivant
+  (`fichiers.purger_dossiers_orphelins_au_demarrage` et
+  `pdf_cache.purger_dossiers_orphelins_au_demarrage` — rien d'équivalent
+  n'est nécessaire pour `extraction_cache`, qui n'écrit jamais sur disque),
+  pas de fuite accumulée entre redémarrages.
 - **Téléchargement interrompu = lien définitivement grillé.** Le jeton est
   invalidé et le fichier supprimé du disque dès que le serveur COMMENCE à
   répondre au `GET`, pas une fois la réception confirmée côté client. Une

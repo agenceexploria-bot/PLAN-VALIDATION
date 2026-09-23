@@ -6,7 +6,7 @@ import fitz
 
 from core import cover, extract
 
-from .. import fichiers, util
+from .. import extraction_cache, fichiers, util
 
 ROLES_VALIDES = ("planche", "garde", "specs")
 
@@ -34,6 +34,13 @@ def extraire_page(
     protocole MCP. Récupérez-la par un GET simple, puis ré-encodez-la en
     base64 pour la fournir à `assembler_pptx` (`planches[].image_base64` /
     `view3d.image_base64`).
+
+    La réponse est aussi mise en cache dans son intégralité côté serveur et
+    identifiée par `extraction_id` (30 min glissantes) : passez CET
+    identifiant, pas le JSON complet, à `traduire_mots` puis à
+    `verifier_rendu` (`words_par_page`). NE RECONSTRUISEZ JAMAIS `words`
+    à la main pour ces appels suivants — un agent Dust réel a buté sur la
+    taille de ce JSON en tentant de le retransmettre tel quel.
 
     `role` adapte le traitement à la nature réelle de la page (comme le fait
     le pipeline de référence, core/extract.py + core/cover.py) :
@@ -103,4 +110,7 @@ def extraire_page(
                     # la page specs, signalée plutôt qu'un échec brutal de l'outil.
                     reponse["vue_3d_erreur"] = str(e)
 
+        cache = extraction_cache.mettre_en_cache(reponse)
+        reponse["extraction_id"] = cache["extraction_id"]
+        reponse["extraction_id_expire_dans_s"] = cache["expire_dans_s"]
         return reponse

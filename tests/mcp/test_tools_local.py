@@ -125,20 +125,65 @@ def test_pdf_trop_volumineux_refuse():
 
 
 def test_traduire_mots_planche(pdf_id):
+    """Chemin NORMAL pour un agent Dust réel : extraction_id, pas de JSON
+    words_data reconstruit à la main (cf. mcp_server/extraction_cache.py)."""
     page = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
-    resultat = traduction.traduire_mots(
-        {"page_size_pts": page["page_size_pts"], "words": page["words"]}, role="planche",
-    )
+    assert page["extraction_id"]
+    resultat = traduction.traduire_mots(extraction_id=page["extraction_id"], role="planche")
     assert isinstance(resultat["labels"], list) and resultat["labels"]
     assert resultat["page_w_pt"] == page["page_size_pts"][0]
+
+
+def test_traduire_mots_planche_via_words_data_direct(pdf_id):
+    """Repli words_data (petits fichiers / tests directs) — cf.
+    util.resoudre_words_data. Le chemin normal pour un agent Dust réel reste
+    extraction_id, testé par ailleurs."""
+    page = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
+    resultat = traduction.traduire_mots(
+        words_data={"page_size_pts": page["page_size_pts"], "words": page["words"]}, role="planche",
+    )
+    assert isinstance(resultat["labels"], list) and resultat["labels"]
+
+
+def test_traduire_mots_exige_exactement_un_des_deux(pdf_id):
+    page = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
+    with pytest.raises(ValueError, match="words_data ou extraction_id"):
+        traduction.traduire_mots(role="planche")
+    with pytest.raises(ValueError, match="words_data ou extraction_id"):
+        traduction.traduire_mots(
+            extraction_id=page["extraction_id"],
+            words_data={"page_size_pts": page["page_size_pts"], "words": page["words"]},
+            role="planche",
+        )
+
+
+def test_traduire_mots_extraction_id_inconnu_refuse():
+    with pytest.raises(ValueError, match="extraction_id"):
+        traduction.traduire_mots(extraction_id="jeton-inexistant", role="planche")
+
+
+def test_traduire_mots_words_data_malformee_message_clair(pdf_id):
+    """Bug corrigé : un words_data mal formé (ex. reconstruit à la main par
+    un agent qui a buté sur la taille du JSON complet) doit renvoyer une
+    erreur explicite nommant le champ en cause — jamais un KeyError/
+    TypeError opaque, jamais un échec silencieux."""
+    with pytest.raises(ValueError, match="page_size_pts"):
+        traduction.traduire_mots(words_data={"words": []}, role="planche")
+
+    with pytest.raises(ValueError, match="'words' manquant"):
+        traduction.traduire_mots(words_data={"page_size_pts": [100, 200]}, role="planche")
+
+    with pytest.raises(ValueError, match=r"words\[0\]"):
+        traduction.traduire_mots(
+            words_data={"page_size_pts": [100, 200], "words": [{"text": "X"}]}, role="planche",
+        )
 
 
 def test_traduire_mots_glossaire_version_non_supportee(pdf_id):
     page = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
     with pytest.raises(ValueError, match="glossaire_version"):
         traduction.traduire_mots(
-            {"page_size_pts": page["page_size_pts"], "words": page["words"]},
-            role="planche", glossaire_version="2026-01",
+            extraction_id=page["extraction_id"], role="planche", glossaire_version="2026-01",
         )
 
 
@@ -150,10 +195,7 @@ def test_traduire_mots_glossaire_version_non_supportee(pdf_id):
 def projet_assemble(pdf_id):
     page_planche = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
     image_planche_b64 = _recuperer_base64(page_planche["image_url"])
-    trad_planche = traduction.traduire_mots(
-        {"page_size_pts": page_planche["page_size_pts"], "words": page_planche["words"]},
-        role="planche",
-    )
+    trad_planche = traduction.traduire_mots(extraction_id=page_planche["extraction_id"], role="planche")
 
     projet_json = {
         "meta": {
@@ -198,8 +240,12 @@ def test_assembler_pptx_numero_mal_forme_refuse():
 
 @pytest.fixture(scope="module")
 def rendu_verifie(projet_assemble):
+    """words_par_page passe l'extraction_id de chaque page, PAS le words_data
+    complet — c'est le pire cas du problème corrigé (agréger PLUSIEURS pages
+    en JSON aurait été encore plus volumineux que le cas à une page de
+    traduire_mots), cf. mcp_server/extraction_cache.py."""
     _, pptx_base64, words_par_page = projet_assemble
-    words_par_page_json = {str(n): wd for n, wd in words_par_page.items()}
+    words_par_page_json = {str(n): wd["extraction_id"] for n, wd in words_par_page.items()}
     resultat = verification.verifier_rendu(
         pptx_base64, words_par_page=words_par_page_json,
         meta={"numero": "LDMCP001", "client": "Client Test MCP"},
@@ -216,6 +262,12 @@ def test_verifier_rendu(rendu_verifie):
     assert resultat["pptx_sha256"]
     assert resultat["rapport_cotes"] is not None
     assert resultat["rapport_cotes"]["survie_nombres"]["statut"] == "PASS"
+
+
+def test_verifier_rendu_words_par_page_extraction_id_inconnu_refuse(projet_assemble):
+    _, pptx_base64, _ = projet_assemble
+    with pytest.raises(ValueError, match="extraction_id"):
+        verification.verifier_rendu(pptx_base64, words_par_page={"2": "jeton-inexistant"})
 
 
 def test_exporter_pdf_refuse_sans_validation(rendu_verifie):
