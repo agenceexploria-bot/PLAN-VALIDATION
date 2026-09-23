@@ -3,11 +3,14 @@
 mcp_server/server.py — serveur MCP « Plan de Validation Vertical », pour
 exposer le pipeline (core/) comme des outils utilisables par un agent Dust.
 
-Aucun état conservé côté serveur au-delà d'un appel : chaque outil reçoit et
-renvoie les données nécessaires explicitement en base64 (mcp_server/util.py).
-Accès protégé par jeton Bearer (MCP_AUTH_TOKEN), vérifié sur CHAQUE requête
-(mcp_server/auth.py) — le serveur refuse de démarrer si ce jeton n'est pas
-défini.
+Chaque outil reçoit et renvoie ses données métier explicitement (jamais
+d'état business caché entre deux appels) — SAUF le PDF fabricant en entrée,
+mis en cache côté serveur le temps d'un pipeline (mcp_server/pdf_cache.py) :
+un agent Dust réel n'a souvent aucun moyen de produire lui-même le base64
+attendu par un appel d'outil MCP, d'où le point d'entrée d'upload direct
+`POST /pdfs`, hors canal MCP. Accès protégé par jeton Bearer
+(MCP_AUTH_TOKEN), vérifié sur CHAQUE requête (mcp_server/auth.py, y compris
+`/pdfs`) — le serveur refuse de démarrer si ce jeton n'est pas défini.
 """
 import os
 from urllib.parse import urlparse
@@ -18,33 +21,37 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from . import fichiers
+from . import fichiers, pdf_cache, util
 from .auth import BearerAuthMiddleware, jeton_attendu
 from .tools import assemblage, export, extraction, inventaire, traduction, verification
 
-server = MCPServer(
-    name="plan-validation-vertical",
-    instructions=(
-        "Pipeline Plan de Validation Vertical : transforme un plan de production "
-        "fabricant (PDF, anglais/italien/turc) en Plan de validation Vertical "
-        "(PPTX puis PDF), à la charte de l'entreprise. Règles absolues, non "
-        "négociables : (1) les dessins ne sont JAMAIS redessinés, seulement "
-        "extraits en image et annotés par-dessus ; (2) aucune valeur numérique "
-        "n'est retapée de mémoire, toujours extraite programmatiquement ; "
-        "(3) le PDF final n'est généré qu'après validation EXPLICITE de "
-        "l'utilisateur du rendu visuel — jamais d'export automatique ; "
-        "(4) le PDF fabricant n'est transmis en base64 QU'UNE SEULE FOIS, à "
-        "inventaire_pdf, qui retourne un pdf_id à réutiliser tel quel pour "
-        "chaque extraire_page — ne jamais redécoder ni retransmettre le PDF. "
-        "Ordre d'appel attendu : inventaire_pdf (classer les pages, obtenir "
-        "pdf_id) -> extraire_page(pdf_id=...) pour chaque page retenue "
-        "(role='garde'|'planche'|'specs') "
-        "-> traduire_mots sur les pages 'planche' et 'specs' -> assembler_pptx "
-        "-> verifier_rendu (montrer les images produites à l'utilisateur et "
-        "obtenir son accord explicite) -> exporter_pdf (valide=True seulement "
-        "après cet accord)."
-    ),
+_INSTRUCTIONS = (
+    "Pipeline Plan de Validation Vertical : transforme un plan de production "
+    "fabricant (PDF, anglais/italien/turc) en Plan de validation Vertical "
+    "(PPTX puis PDF), à la charte de l'entreprise. Règles absolues, non "
+    "négociables : (1) les dessins ne sont JAMAIS redessinés, seulement "
+    "extraits en image et annotés par-dessus ; (2) aucune valeur numérique "
+    "n'est retapée de mémoire, toujours extraite programmatiquement ; "
+    "(3) le PDF final n'est généré qu'après validation EXPLICITE de "
+    "l'utilisateur du rendu visuel — jamais d'export automatique ; "
+    "(4) le PDF fabricant fourni par l'utilisateur ne s'encode PAS en base64 "
+    "à la main : téléversez-le d'abord par une commande shell dans votre bac "
+    f"à sable, ex. curl -X POST {fichiers.base_url_publique()}{pdf_cache.PREFIXE_ROUTE} "
+    "-H 'Authorization: Bearer <MCP_AUTH_TOKEN>' -F pdf=@<chemin_du_fichier>.pdf "
+    "(même jeton Bearer que pour les appels d'outils), qui retourne "
+    "{pdf_id, expire_dans_s} ; réutilisez ce pdf_id tel quel pour "
+    "inventaire_pdf PUIS chaque extraire_page, jamais de base64 manuel. "
+    "Ordre d'appel attendu : POST /pdfs (obtenir pdf_id) -> "
+    "inventaire_pdf(pdf_id=...) (classer les pages) -> "
+    "extraire_page(pdf_id=...) pour chaque page retenue "
+    "(role='garde'|'planche'|'specs') "
+    "-> traduire_mots sur les pages 'planche' et 'specs' -> assembler_pptx "
+    "-> verifier_rendu (montrer les images produites à l'utilisateur et "
+    "obtenir son accord explicite) -> exporter_pdf (valide=True seulement "
+    "après cet accord)."
 )
+
+server = MCPServer(name="plan-validation-vertical", instructions=_INSTRUCTIONS)
 
 # Chaque outil est une fonction Python ordinaire, testable directement sans
 # passer par le protocole MCP (cf. tests/mcp/test_tools_local.py) ; enregistrée
@@ -72,6 +79,32 @@ async def telecharger_fichier(request: Request) -> Response:
         media_type=resultat["content_type"],
         headers={"Content-Disposition": f'attachment; filename="{resultat["nom_fichier"]}"'},
     )
+
+
+@server.custom_route(pdf_cache.PREFIXE_ROUTE, methods=["POST"])
+async def televerser_pdf(request: Request) -> Response:
+    """Upload direct d'un PDF fabricant, HORS du canal MCP (pas de limite
+    ~1 Mio de réponse d'outil, pas de base64 à produire côté agent) — cf.
+    mcp_server/pdf_cache.py pour pourquoi ce point d'entrée existe. Reçoit
+    un `multipart/form-data` avec un champ `pdf` (le fichier). PROTÉGÉ par le
+    même jeton Bearer que `/mcp` (contrairement à `/fichiers/...` : ceci est
+    un point d'entrée serveur-à-serveur, jamais cliqué par l'utilisateur
+    final). Retourne {"pdf_id", "expire_dans_s"} à passer tel quel à
+    `inventaire_pdf`/`extraire_page` à la place de `pdf_base64`."""
+    longueur = request.headers.get("content-length")
+    if longueur is not None and int(longueur) > TAILLE_MAX_REQUETE_OCTETS:
+        return JSONResponse({"error": "corps de requête trop volumineux"}, status_code=413)
+    form = await request.form()
+    televerse = form.get("pdf")
+    if televerse is None or not hasattr(televerse, "read"):
+        return JSONResponse({"error": "champ multipart 'pdf' manquant"}, status_code=400)
+    contenu = await televerse.read()
+    await televerse.close()
+    try:
+        util.verifier_taille_pdf(contenu)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=413)
+    return JSONResponse(pdf_cache.mettre_en_cache(contenu))
 
 # Taille max d'une requête HTTP acceptée par le serveur MCP. Un PDF fabricant
 # de 50 Mo (mcp_server.util.LIMITE_PDF_MO) inflate à ~67 Mo une fois encodé en
@@ -116,9 +149,9 @@ def construire_app():
     # le mécanisme de transport (achemine les réponses SSE), pas un état
     # métier. `stateless_http=True` cassait le suivi des réponses (« SSE
     # stream ended without a response » dès le premier appel d'outil, cf.
-    # tests/mcp/test_server_http.py). « Pas d'état conservé côté serveur »
-    # (cf. mcp_server/util.py) porte sur NOS données (PDF/PPTX), jamais
-    # cachées entre deux appels — pas sur ce mécanisme de transport.
+    # tests/mcp/test_server_http.py). Sans rapport avec le cache du PDF
+    # fabricant (mcp_server/pdf_cache.py), qui vit dans son propre registre
+    # en mémoire, indépendant de cette session de transport.
     app = server.streamable_http_app(
         max_request_body_size=TAILLE_MAX_REQUETE_OCTETS,
         transport_security=_parametres_securite_transport(),

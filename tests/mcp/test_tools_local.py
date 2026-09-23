@@ -52,11 +52,11 @@ def pdf_id(pdf_base64):
     mcp_server/pdf_cache.py) — les tests suivants réutilisent le pdf_id
     qu'il retourne, comme le ferait l'agent Dust réel, au lieu de
     retransmettre le PDF en base64 à chaque outil."""
-    return inventaire.inventaire_pdf(pdf_base64)["pdf_id"]
+    return inventaire.inventaire_pdf(pdf_base64=pdf_base64)["pdf_id"]
 
 
 def test_inventaire_pdf(pdf_base64):
-    resultat = inventaire.inventaire_pdf(pdf_base64)
+    resultat = inventaire.inventaire_pdf(pdf_base64=pdf_base64)
     assert resultat["pdf_id"]
     assert resultat["n_pages"] == 2
     assert len(resultat["pages"]) == 2
@@ -66,9 +66,17 @@ def test_inventaire_pdf(pdf_base64):
         assert len(page["page_size_pts"]) == 2
 
 
+def test_inventaire_pdf_exige_exactement_un_des_deux(pdf_base64, pdf_id):
+    with pytest.raises(ValueError, match="pdf_base64 ou pdf_id"):
+        inventaire.inventaire_pdf()
+    with pytest.raises(ValueError, match="pdf_base64 ou pdf_id"):
+        inventaire.inventaire_pdf(pdf_base64=pdf_base64, pdf_id=pdf_id)
+
+
 def test_extraire_page_garde(pdf_id):
-    resultat = extraction.extraire_page(pdf_id, page_num=1, dpi=150, role="garde")
+    resultat = extraction.extraire_page(pdf_id=pdf_id, page_num=1, dpi=150, role="garde")
     assert resultat["page_num"] == 1
+    assert resultat["pdf_id"] == pdf_id
     assert "image_url" in resultat
     assert "survie_nombres" not in resultat  # role=garde : rediger=False, aucune rédaction
     # La vue 3D peut échouer à s'extraire sur ce fixture minimal (pas de
@@ -78,7 +86,7 @@ def test_extraire_page_garde(pdf_id):
 
 
 def test_extraire_page_planche(pdf_id):
-    resultat = extraction.extraire_page(pdf_id, page_num=2, dpi=150, role="planche")
+    resultat = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
     assert resultat["page_num"] == 2
     assert _contenu_publie(resultat["image_url"])[:8] == b"\x89PNG\r\n\x1a\n"
     assert resultat["survie_nombres"]["perdus"] == []
@@ -86,29 +94,38 @@ def test_extraire_page_planche(pdf_id):
     assert any(w["translatable"] for w in resultat["words"])
 
 
+def test_extraire_page_planche_via_base64_direct(pdf_base64):
+    """Repli base64 (petits fichiers / tests directs) — cf.
+    util.resoudre_pdf. Le chemin normal pour un agent Dust réel reste
+    pdf_id, testé par ailleurs."""
+    resultat = extraction.extraire_page(pdf_base64=pdf_base64, page_num=2, dpi=150, role="planche")
+    assert resultat["page_num"] == 2
+    assert resultat["pdf_id"]  # un nouveau pdf_id a été mis en cache
+
+
 def test_extraire_page_role_invalide(pdf_id):
     with pytest.raises(ValueError):
-        extraction.extraire_page(pdf_id, page_num=1, role="inconnu")
+        extraction.extraire_page(pdf_id=pdf_id, page_num=1, role="inconnu")
 
 
 def test_extraire_page_hors_limites(pdf_id):
     with pytest.raises(ValueError):
-        extraction.extraire_page(pdf_id, page_num=99)
+        extraction.extraire_page(pdf_id=pdf_id, page_num=99)
 
 
 def test_extraire_page_pdf_id_inconnu_refuse():
     with pytest.raises(ValueError, match="pdf_id"):
-        extraction.extraire_page("jeton-inexistant", page_num=1)
+        extraction.extraire_page(pdf_id="jeton-inexistant", page_num=1)
 
 
 def test_pdf_trop_volumineux_refuse():
     faux_pdf_base64 = base64.b64encode(b"x" * (51 * 1_000_000)).decode("ascii")
     with pytest.raises(ValueError, match="volumineux"):
-        inventaire.inventaire_pdf(faux_pdf_base64)
+        inventaire.inventaire_pdf(pdf_base64=faux_pdf_base64)
 
 
 def test_traduire_mots_planche(pdf_id):
-    page = extraction.extraire_page(pdf_id, page_num=2, dpi=150, role="planche")
+    page = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
     resultat = traduction.traduire_mots(
         {"page_size_pts": page["page_size_pts"], "words": page["words"]}, role="planche",
     )
@@ -117,7 +134,7 @@ def test_traduire_mots_planche(pdf_id):
 
 
 def test_traduire_mots_glossaire_version_non_supportee(pdf_id):
-    page = extraction.extraire_page(pdf_id, page_num=2, dpi=150, role="planche")
+    page = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
     with pytest.raises(ValueError, match="glossaire_version"):
         traduction.traduire_mots(
             {"page_size_pts": page["page_size_pts"], "words": page["words"]},
@@ -131,7 +148,7 @@ def test_traduire_mots_glossaire_version_non_supportee(pdf_id):
 
 @pytest.fixture(scope="module")
 def projet_assemble(pdf_id):
-    page_planche = extraction.extraire_page(pdf_id, page_num=2, dpi=150, role="planche")
+    page_planche = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
     image_planche_b64 = _recuperer_base64(page_planche["image_url"])
     trad_planche = traduction.traduire_mots(
         {"page_size_pts": page_planche["page_size_pts"], "words": page_planche["words"]},

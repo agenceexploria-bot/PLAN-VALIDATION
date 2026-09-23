@@ -1,23 +1,40 @@
 # -*- coding: utf-8 -*-
 """
 mcp_server/pdf_cache.py — cache serveur du PDF fabricant en cours de
-traitement, pour éviter que l'agent (Dust) doive renvoyer l'intégralité du
-PDF en base64 à CHAQUE appel d'outil. Constaté avec un agent Dust réel : le
-pipeline appelait jusque-là `extraire_page` une fois PAR PAGE retenue en lui
-repassant CHAQUE FOIS le PDF complet en base64 (`mcp_server/util.py`,
-« aucun état conservé entre appels ») — au-delà de quelques pages, l'agent
-jugeait le volume trop lourd et improvisait des contournements dangereux
-(rastérisation basse résolution, OCR local, découpage manuel) plutôt que
-d'appeler l'outil normalement.
+traitement, pour que l'agent (Dust) n'ait PAS à faire transiter le PDF en
+base64 par le canal MCP à chaque outil. Deux problèmes distincts, trouvés
+l'un après l'autre en conditions réelles avec un agent Dust :
 
-`inventaire_pdf` (étape 1) décode le PDF une seule fois, le met en cache ICI
-et renvoie un `pdf_id` opaque ; `extraire_page` (étape 2, appelée une fois
-par page) le référence par ce `pdf_id` au lieu de retransmettre le PDF —
-l'agent n'envoie donc le blob qu'UNE fois par pipeline, plus une fois par
-page. Décision assumée : ceci réintroduit un état serveur entre deux appels
-MCP, ce que `mcp_server/util.py` excluait explicitement jusqu'ici — accepté
-en connaissance de cause car le problème observé (hésitation de l'agent
-face au volume répété) est plus coûteux que la simplicité du « sans état ».
+1. (Résolu par ce module dès sa première version) `extraire_page` exigeait
+   le PDF complet en base64 à CHAQUE appel, une fois PAR PAGE retenue — au-
+   delà de quelques pages, l'agent jugeait le volume trop lourd et
+   improvisait des contournements dangereux (rastérisation basse
+   résolution, OCR local, découpage manuel) plutôt que d'appeler l'outil
+   normalement.
+2. (Plus grave, révélé ensuite par un vrai essai utilisateur) même l'envoi
+   UNIQUE du PDF complet en base64 à `inventaire_pdf` s'est avéré IMPOSSIBLE
+   pour un agent Dust réel : rien, dans son environnement, ne lui permet de
+   produire un blob base64 à partir d'un fichier joint en conversation et de
+   l'injecter dans un argument d'outil MCP. L'agent a fini par improviser un
+   PPTX entièrement hors pipeline (pdfplumber + python-pptx maison) plutôt
+   que d'utiliser nos outils.
+
+D'où le point d'entrée HTTP direct `POST {PREFIXE_ROUTE}` (cf.
+`mcp_server/server.py::televerser_pdf`) : un agent Dust peut le lister comme
+une commande à exécuter dans son bac à sable (ex. `curl -F pdf=@fichier.pdf
+...`) plutôt que de manipuler du base64 lui-même. HORS du canal MCP
+(streamable-http) donc PAS soumis à sa limite ~1 Mio, et PROTÉGÉ par le même
+jeton Bearer que `/mcp` (serveur-à-serveur, jamais exposé à l'utilisateur
+final — contrairement à `mcp_server/fichiers.py`).
+
+`inventaire_pdf` (étape 1) accepte soit ce `pdf_id` téléversé, soit
+`pdf_base64` en repli (petits fichiers, tests directs) — cf.
+`mcp_server/util.py::resoudre_pdf`. `extraire_page` (étape 2, appelée une
+fois par page) référence le PDF par `pdf_id` au lieu de le retransmettre.
+Décision assumée : ceci réintroduit un état serveur entre deux appels MCP,
+ce que `mcp_server/util.py` excluait explicitement jusqu'ici — accepté en
+connaissance de cause car les deux problèmes observés sont plus coûteux que
+la simplicité du « sans état ».
 
 Contrairement à `mcp_server/fichiers.py` (sortie, jeton à usage UNIQUE) :
 une entrée ICI est réutilisable (une lecture par page extraite) et sa durée
@@ -39,6 +56,9 @@ DUREE_VIE_SECONDES = 30 * 60
 # supprimer le dossier encore actif d'une autre instance qui démarre juste).
 SEUIL_ORPHELIN_SECONDES = 45 * 60
 PREFIXE_DOSSIER = "mcp_plan_validation_pdfs_"
+# Route HTTP d'upload direct (POST multipart, hors canal MCP) — protégée par
+# le jeton Bearer serveur-à-serveur (contrairement à fichiers.PREFIXE_ROUTE).
+PREFIXE_ROUTE = "/pdfs"
 
 
 def purger_dossiers_orphelins_au_demarrage(seuil_secondes: float = SEUIL_ORPHELIN_SECONDES) -> int:

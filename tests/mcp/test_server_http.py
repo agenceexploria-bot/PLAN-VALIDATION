@@ -8,6 +8,7 @@ vérifie que le jeton Bearer est exigé, puis fait un échange MCP complet
 """
 import asyncio
 import base64
+import json
 import os
 import socket
 import subprocess
@@ -114,6 +115,63 @@ def test_liste_les_6_outils_et_appelle_inventaire_pdf(url_serveur):
                     assert resultat_page.structured_content["page_num"] == 2
 
     asyncio.run(_run())
+
+
+def test_upload_pdf_via_curl_externe_puis_pipeline_complet(url_serveur):
+    """Simule ce qu'un agent Dust réel ferait dans son bac à sable — `curl`,
+    PAS le client MCP Python qu'on contrôle par ailleurs dans ce fichier —
+    pour téléverser le PDF hors canal MCP (mcp_server/pdf_cache.py) : upload
+    multipart sur POST /pdfs, puis réutilisation du `pdf_id` obtenu dans
+    inventaire_pdf et extraire_page via un vrai échange MCP. C'est
+    précisément le scénario (upload externe non-Python) qui avait échappé
+    aux tests précédents et qui a révélé, en conditions réelles avec Dust,
+    qu'un agent n'a souvent AUCUN moyen de produire du base64 lui-même."""
+    base_url = url_serveur.rsplit("/mcp", 1)[0]
+    resultat_curl = subprocess.run(
+        [
+            "curl", "-sS", "-X", "POST", f"{base_url}/pdfs",
+            "-H", f"Authorization: Bearer {JETON}",
+            "-F", f"pdf=@{FIXTURE_PDF}",
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert resultat_curl.returncode == 0, resultat_curl.stderr
+    data_upload = json.loads(resultat_curl.stdout)
+    pdf_id = data_upload["pdf_id"]
+    assert pdf_id
+    assert data_upload["expire_dans_s"] > 0
+
+    async def _run():
+        async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {JETON}"}, timeout=30) as http_client:
+            async with streamable_http_client(url_serveur, http_client=http_client) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+
+                    resultat = await session.call_tool("inventaire_pdf", {"pdf_id": pdf_id})
+                    assert not resultat.is_error, resultat.content
+                    data = resultat.structured_content
+                    assert data["pdf_id"] == pdf_id  # même id réutilisé, pas un nouveau
+                    assert data["n_pages"] == 2
+
+                    resultat_page = await session.call_tool(
+                        "extraire_page", {"pdf_id": pdf_id, "page_num": 2, "dpi": 150, "role": "planche"}
+                    )
+                    assert not resultat_page.is_error, resultat_page.content
+                    assert resultat_page.structured_content["page_num"] == 2
+
+    asyncio.run(_run())
+
+
+def test_upload_pdf_sans_jeton_bearer_refuse(url_serveur):
+    """Contrairement au téléchargement de SORTIE (fichiers.py, exempté du
+    Bearer — destiné au navigateur de l'utilisateur final), l'upload
+    d'ENTRÉE est un point d'entrée serveur-à-serveur : protégé par le MÊME
+    jeton Bearer que /mcp."""
+    base_url = url_serveur.rsplit("/mcp", 1)[0]
+    r = httpx2.post(
+        f"{base_url}/pdfs", files={"pdf": ("x.pdf", b"%PDF-1.4 pas un vrai pdf")}, timeout=10,
+    )
+    assert r.status_code == 401
 
 
 def test_url_publiee_telechargeable_sans_jeton_bearer_et_a_usage_unique(url_serveur):

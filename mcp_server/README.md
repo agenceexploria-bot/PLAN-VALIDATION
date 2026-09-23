@@ -35,30 +35,57 @@ et comment l'utiliser. Ordre d'appel attendu : `inventaire_pdf` →
 `verifier_rendu` (montrer les images à l'utilisateur, obtenir son accord) →
 `exporter_pdf`.
 
-## Le PDF fabricant en entrée : transmis une seule fois, référencé par `pdf_id`
+## Le PDF fabricant en entrée : téléversé une seule fois hors canal MCP, référencé par `pdf_id`
 
-Constaté avec un agent Dust réel traitant un vrai plan multi-pages :
-renvoyer le PDF complet en base64 à **chaque** appel (`inventaire_pdf`, puis
-`extraire_page` une fois par page) faisait hésiter l'agent sur le volume
-dès quelques pages — il se mettait à improviser des contournements
-dangereux (rastérisation basse résolution, OCR local, découpage manuel du
-PDF) plutôt que d'appeler l'outil normalement.
+Deux problèmes trouvés l'un après l'autre en conditions réelles avec un
+agent Dust :
 
-`inventaire_pdf` reçoit donc le PDF en base64 **une seule fois** par
-pipeline, le met en cache côté serveur (`mcp_server/pdf_cache.py`, 30 min,
-prolongées à chaque lecture) et retourne un `pdf_id` opaque ; `extraire_page`
-le référence par ce `pdf_id` au lieu de retransmettre le PDF. Si `pdf_id`
-est inconnu ou expiré, `extraire_page` refuse explicitement (`ValueError`)
-— il suffit de relancer `inventaire_pdf`.
+1. Renvoyer le PDF complet en base64 à **chaque** appel (`inventaire_pdf`,
+   puis `extraire_page` une fois par page) faisait hésiter l'agent sur le
+   volume dès quelques pages — il se mettait à improviser des
+   contournements dangereux (rastérisation basse résolution, OCR local,
+   découpage manuel du PDF) plutôt que d'appeler l'outil normalement.
+2. Plus grave, confirmé ensuite directement par l'agent Dust lui-même :
+   même l'envoi **unique** du PDF en base64 s'est avéré **impossible** —
+   rien dans son environnement ne lui permet de produire un blob base64 à
+   partir d'un fichier joint en conversation et de l'injecter dans un
+   argument d'outil MCP. L'agent a fini par improviser un PPTX entièrement
+   hors pipeline plutôt que d'utiliser nos outils.
 
-⚠️ Décision assumée : ceci réintroduit un état serveur entre deux appels
-MCP (le principe « aucun état conservé entre appels » ne s'applique plus au
-PDF d'entrée, seulement aux dossiers de travail par appel, cf.
-`mcp_server/util.py`) — accepté car le problème observé (hésitation de
-l'agent face au volume répété) est plus coûteux que la simplicité du «
-sans état ». Contrairement au registre de téléchargement (`fichiers.py`,
-usage UNIQUE), le cache PDF est **réutilisable** (une lecture par page) et
-son expiration **glisse** à chaque lecture.
+D'où un point d'entrée HTTP **direct**, hors du canal MCP (donc pas soumis
+à sa limite ~1 Mio) :
+
+```
+POST {base_url}/pdfs
+Authorization: Bearer <MCP_AUTH_TOKEN>   (même jeton que /mcp)
+Content-Type: multipart/form-data ; champ "pdf" = le fichier
+
+→ 200 {"pdf_id": "...", "expire_dans_s": 1800}
+```
+
+C'est une commande shell (`curl -F pdf=@fichier.pdf ...`) que l'agent Dust
+exécute dans son bac à sable — pas un argument d'outil MCP à construire à la
+main. Le `pdf_id` retourné se passe ensuite tel quel à `inventaire_pdf` PUIS
+à chaque `extraire_page` (`mcp_server/pdf_cache.py`, 30 min, prolongées à
+chaque lecture). `pdf_base64` reste accepté en repli sur ces deux outils
+(petits fichiers, tests directs — cf. `mcp_server/util.py::resoudre_pdf`),
+mais `pdf_id` est le chemin **normal** pour un agent Dust réel. Fournir
+exactement un des deux ; si `pdf_id` est inconnu ou expiré, l'outil refuse
+explicitement (`ValueError`) — il suffit de retéléverser le PDF.
+
+⚠️ Décisions assumées :
+- Ceci réintroduit un état serveur entre deux appels MCP (le principe
+  « aucun état conservé entre appels » ne s'applique plus au PDF d'entrée,
+  seulement aux dossiers de travail par appel, cf. `mcp_server/util.py`) —
+  accepté car les deux problèmes observés sont plus coûteux que la
+  simplicité du « sans état ».
+- `POST /pdfs`, contrairement au téléchargement de sortie (`fichiers.py`,
+  volontairement exempté du Bearer), est protégé par le **même** jeton
+  Bearer que `/mcp` : c'est un point d'entrée serveur-à-serveur, jamais
+  cliqué par l'utilisateur final.
+- Contrairement au registre de téléchargement (`fichiers.py`, usage
+  UNIQUE), le cache PDF est **réutilisable** (une lecture par page) et son
+  expiration **glisse** à chaque lecture.
 
 ## Fichiers binaires en sortie : des URLs, jamais du contenu inline
 
@@ -120,7 +147,8 @@ pytest tests/mcp/
   Python, pipeline complet sur `tests/fixtures/DHYA2_test.pdf`.
 - `test_server_http.py` — le **vrai protocole MCP** (process serveur séparé
   + vrai client MCP) : jeton Bearer exigé, liste des outils, appel réel
-  d'outil, téléchargement réel d'un fichier publié.
+  d'outil, téléchargement réel d'un fichier publié, upload réel via un
+  process `curl` externe (pas le client MCP Python) sur `POST /pdfs`.
 - `test_deploiement_mcp.py` — contrôles statiques sur `Dockerfile` /
   `requirements.txt` (fonts-liberation, versions épinglées).
 
@@ -171,6 +199,26 @@ Dans la configuration d'un agent Dust, ajouter un serveur MCP personnalisé :
 
 - **URL** : `https://<nom-du-service>.onrender.com/mcp`
 - **Authentification** : Bearer, jeton = la valeur de `MCP_AUTH_TOKEN`
+
+Le serveur (`mcp_server/server.py::_INSTRUCTIONS`) explique déjà à l'agent,
+via le protocole MCP lui-même, qu'il doit téléverser le PDF par `curl` avant
+d'appeler `inventaire_pdf`. Mais si l'agent a besoin d'une consigne plus
+explicite dans ses propres instructions Dust (ex. s'il continue de tenter du
+base64 malgré tout), une formulation possible à y ajouter :
+
+> Pour traiter un PDF fabricant joint à la conversation, NE l'encode JAMAIS
+> toi-même en base64. Exécute d'abord, dans ton environnement d'exécution :
+> `curl -X POST https://<nom-du-service>.onrender.com/pdfs -H "Authorization:
+> Bearer <MCP_AUTH_TOKEN>" -F pdf=@<chemin_local_du_fichier>.pdf` — la
+> réponse contient `pdf_id`. Utilise ensuite ce `pdf_id` (jamais de base64)
+> dans `inventaire_pdf` puis dans chaque `extraire_page`.
+
+⚠️ Point non vérifiable depuis ce dépôt : que l'exécution en bac à sable de
+l'agent Dust ait bien accès à la valeur de `MCP_AUTH_TOKEN` pour la mettre
+dans cette commande `curl`. Si ce n'est pas le cas (l'agent n'a accès qu'au
+jeton utilisé en interne pour les appels d'outils MCP, pas à une variable
+qu'il peut réinjecter dans une commande shell), il faudra un autre mécanisme
+de transmission du jeton à l'agent — à confirmer par un essai réel.
 
 ## Limites connues (honnêtes)
 
