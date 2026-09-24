@@ -20,6 +20,13 @@ def test_fonts_liberation_installees():
     )
 
 
+def test_carlito_installee_pour_calibri():
+    """Cf. tests/test_deploiement.py : gabarits en Calibri — sans Carlito, le
+    rendu du premier déploiement Render réel avait des espaces parasites au
+    milieu des mots (« PLANS DE VALI DATI ON ») et des cotes cassées."""
+    assert "fonts-crosextra-carlito" in DOCKERFILE
+
+
 def test_ne_copie_pas_app_streamlit_ni_tests():
     assert "COPY app.py" not in DOCKERFILE
     assert "COPY tests" not in DOCKERFILE

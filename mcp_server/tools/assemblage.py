@@ -21,7 +21,8 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
     template vide à jetons — cf. core/assemble.py), remplacements en place.
     Réutilise core/assemble.py TEL QUEL (contention des étiquettes dans le
     cadre, rotation 90/270°, page_w par planche, cartouche_replace appliqué
-    partout, image générique de la garde neutralisée/conservée). Le dessin
+    partout, garde sans AUCUNE image de plan ou de dessin — la vue 3D va sur
+    la page specs, jamais sur la garde). Le dessin
     n'est jamais redessiné : chaque planche est l'image déjà extraite et
     rédigée par `extraire_page`, déposée telle quelle.
 
@@ -34,7 +35,10 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
                par défaut), "type_equipement": "non accompagné"|"accompagné"},
       "view3d": {"extraction_id": str, "callouts": [...] (optionnel)} | null,
                  # extraction_id de la page extraite avec role="garde"
-      "specs": {"table": [[libelle_fr, valeur], ...]},
+      "specs": {"extraction_id": str},
+                 # OBLIGATOIRE : extraction_id de la page specs, APRÈS
+                 # traduire_mots(extraction_id=..., role="specs") — ou, en
+                 # repli, {"table": [[libelle_fr, valeur], ...]} non vide
       "planches": [{"extraction_id": str}, ...],
                  # extraction_id de chaque page extraite avec role="planche",
                  # APRÈS traduire_mots(extraction_id=...) sur cette page
@@ -89,8 +93,7 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
     if not isinstance(planches_in, list):
         raise ValueError("planches doit être une liste.")
     planches_resolues = [_resoudre_planche(i, p) for i, p in enumerate(planches_in)]
-    specs = projet_json.get("specs") or {}
-    _valider_specs(specs)
+    specs = _resoudre_specs(projet_json.get("specs"))
 
     with util.workdir_temporaire() as wd:
         view3d = None
@@ -154,15 +157,43 @@ def _valider_overlays(liste, champ: str) -> None:
             raise ValueError(f"{champ}[{j}].bbox doit être [x0, y0, x1, y1] (nombres), reçu : {bbox!r}.")
 
 
-def _valider_specs(specs) -> None:
+ERREUR_SPECS_ABSENT = (
+    "specs est obligatoire et ne doit pas être vide : la page specs (slide 2) porte "
+    "toujours au moins le tableau FR — sans lui, elle sort quasi blanche. Passez "
+    "specs={\"extraction_id\": ...} après traduire_mots(extraction_id=..., role='specs') "
+    "sur la page specs (ou, en repli, specs={\"table\": [[libellé, valeur], ...]})."
+)
+
+
+def _resoudre_specs(specs) -> dict:
+    """{"table": [...]} non vide pour `specs` — fourni tel quel, ou repris
+    de `traduire_mots(role="specs")` via `extraction_id`. Jamais vide :
+    premier test réel sur Render, page specs sortie blanche sans erreur."""
+    if not specs:
+        raise ValueError(ERREUR_SPECS_ABSENT)
     if not isinstance(specs, dict):
-        raise ValueError('specs doit être un objet {"table": [...]}.')
-    table = specs.get("table", [])
-    if not isinstance(table, list):
-        raise ValueError("specs.table doit être une liste de [libellé, valeur].")
-    for j, ligne in enumerate(table):
-        if not (isinstance(ligne, list) and len(ligne) == 2):
-            raise ValueError(f"specs.table[{j}] doit être [libellé, valeur], reçu : {ligne!r}.")
+        raise ValueError('specs doit être un objet {"extraction_id": ...} ou {"table": [...]}.')
+    if bool(specs.get("extraction_id")) == bool(specs.get("table")):
+        if not specs.get("extraction_id") and not specs.get("table"):
+            raise ValueError(ERREUR_SPECS_ABSENT)
+        raise ValueError("specs : fournir exactement un de extraction_id ou table (pas les deux).")
+    if specs.get("extraction_id"):
+        eid = specs["extraction_id"]
+        _extraction(eid, "specs")
+        table = extraction_cache.recuperer_traduction(eid, "specs")
+        if table is None:
+            raise ValueError(
+                "specs : aucun tableau traduit pour cette extraction — appelez d'abord "
+                "traduire_mots(extraction_id=..., role='specs') sur la page specs."
+            )
+    else:
+        table = specs["table"]
+        if not isinstance(table, list):
+            raise ValueError("specs.table doit être une liste de [libellé, valeur].")
+        for j, ligne in enumerate(table):
+            if not (isinstance(ligne, list) and len(ligne) == 2):
+                raise ValueError(f"specs.table[{j}] doit être [libellé, valeur], reçu : {ligne!r}.")
+    return {"table": table}
 
 
 def _exactement_un(entree: dict, champ: str) -> None:
@@ -201,7 +232,7 @@ def _resoudre_planche(i: int, p) -> tuple[bytes, Any, float, list]:
         page_n, page_w = donnees["page_num"], donnees["page_size_pts"][0]
         labels = p.get("labels")
         if labels is None:
-            labels = extraction_cache.recuperer_labels(eid)
+            labels = extraction_cache.recuperer_traduction(eid, "planche")
             if labels is None:
                 raise ValueError(
                     f"{champ} : aucun label traduit pour cette extraction — appelez d'abord "

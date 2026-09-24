@@ -5,6 +5,7 @@ cartouche, dont le point de vigilance n°1 (résidu caché d'un ancien dossier
 dans une cellule fusionnée masquée) a été vérifié sur les vrais gabarits
 LD82040.pptx / LD64397.pptx (audit de session).
 """
+import pytest
 from pptx import Presentation
 from PIL import Image
 
@@ -42,6 +43,46 @@ def test_purge_cartouche_sur_toutes_les_slides_sans_residu(tmp_path):
                         assert "ECEE" not in texte
                     if texte.strip().upper().startswith("LD") and ":" not in texte:
                         assert texte.strip() == meta["numero"]
+
+
+def _images_de(slide):
+    """(nom, surface en EMU²) de chaque shape portant une image."""
+    return [(sh.name, (sh.width or 0) * (sh.height or 0)) for sh in slide.shapes if "blip" in sh._element.xml]
+
+
+@pytest.mark.parametrize("type_equipement", ["non accompagné", "accompagné"])
+def test_aucune_image_de_plan_sur_la_page_de_garde(tmp_path, type_equipement):
+    """Décision produit définitive : la garde n'affiche JAMAIS de
+    représentation de plan ou de dessin — ni l'image générique du monte-charge
+    héritée du gabarit (« Freeform 2 » / « Google Shape;88 »), ni une vue 3D.
+    Seuls restent la charte (logo, icône, décor) et les photos des contacts."""
+    out, _ = _construire(tmp_path, type_equipement=type_equipement)
+    prs = Presentation(out)
+    surface_slide = prs.slide_width * prs.slide_height
+    images = _images_de(prs.slides[0])
+    grandes = [nom for nom, surface in images if surface > assemble.PART_MAX_IMAGE_GARDE * surface_slide]
+    assert not grandes, f"image de plan/dessin sur la garde : {grandes}"
+    # Les petites images de la charte et des contacts sont conservées.
+    assert len(images) >= 4, images
+
+
+def test_vue3d_jamais_posee_sur_la_garde(tmp_path):
+    """Même quand le projet fournit une vue 3D fabricant, elle va sur la page
+    specs, jamais sur la garde."""
+    Image.new("RGB", (1600, 1200), "white").save(tmp_path / "cover_3d_full.png")
+    out = tmp_path / "v3d_garde.pptx"
+    assemble.assembler({
+        "base": assemble.base_pour_type("non accompagné"), "out": out, "workdir": tmp_path,
+        "meta": {"numero": "LDTEST102", "client": "X", "dessinateur": "AB", "indice": "R00",
+                 "date": "01/01/2026", "equipement": "MONTE-CHARGE"},
+        "specs": {"table": [("Client", "Test")]},
+        "view3d": {"image": "cover_3d_full.png", "image_page_w_pt": 800, "callouts": []},
+        "planches": [],
+    })
+    prs = Presentation(out)
+    surface_slide = prs.slide_width * prs.slide_height
+    assert not [n for n, s in _images_de(prs.slides[0]) if s > assemble.PART_MAX_IMAGE_GARDE * surface_slide]
+    assert any(sh.shape_type == 13 for sh in prs.slides[1].shapes)  # la 3D est bien sur la page specs
 
 
 def test_deux_contacts_toujours_presents_ld64397(tmp_path):

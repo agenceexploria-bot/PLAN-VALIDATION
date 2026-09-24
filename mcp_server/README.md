@@ -32,9 +32,10 @@ Chaque outil a une description détaillée dans son propre docstring
 (`mcp_server/tools/*.py`) — c'est ce que l'agent Dust lit pour savoir quand
 et comment l'utiliser. Ordre d'appel attendu : `inventaire_pdf` →
 `extraire_page` (par page retenue, obtenir `extraction_id`) →
-`traduire_mots(extraction_id=...)` →
-`assembler_pptx(planches=[{extraction_id}, ...], view3d={extraction_id})`
-(obtenir `pptx_id`) → `verifier_rendu(pptx_id=..., words_par_page={page:
+`traduire_mots(extraction_id=...)` (role `planche` sur les planches,
+`specs` sur la page specs) →
+`assembler_pptx(planches=[{extraction_id}, ...], view3d={extraction_id},
+specs={extraction_id})` (obtenir `pptx_id`) → `verifier_rendu(pptx_id=..., words_par_page={page:
 extraction_id, ...})` (montrer les images à l'utilisateur, obtenir son
 accord) → `exporter_pdf(pptx_id=..., valide=True)`.
 
@@ -155,12 +156,23 @@ cas, audit de toutes les entrées des 6 outils :
 | `assembler_pptx` | `planches[].image_base64`, `view3d.image_base64` | `extraction_id` de la page (**nouveau**) |
 | `assembler_pptx` | `planches[].labels` (sortie de `traduire_mots`, agrégée sur N planches) | repris automatiquement via le même `extraction_id` (**nouveau**) |
 | `assembler_pptx` | `planches[].page_w_pt`, `page_n`, `view3d.image_page_w_pt` | repris via `extraction_id` — plus aucune valeur retapée par l'agent (**nouveau**) |
+| `assembler_pptx` | `specs.table` (sortie de `traduire_mots(role="specs")`) | repris via l'`extraction_id` de la page specs ; `specs` est désormais **OBLIGATOIRE** (**nouveau**, cf. ci-dessous) |
 | `verifier_rendu`, `exporter_pdf` | `pptx_base64` (PPTX de plusieurs Mo — pas encore vu échouer, mais pire cas que la planche) | `pptx_id` (**nouveau**) |
 | `verifier_rendu` | `words_par_page` | `extraction_id` par page (déjà) |
 
-Restent inline, volontairement : `meta`, `specs.table` (quelques dizaines
-de lignes), `view3d.callouts` et `hors_glossaire` (optionnels) — de
-l'ordre du Ko.
+Restent inline, volontairement : `meta`, `view3d.callouts` et
+`hors_glossaire` (optionnels) — de l'ordre du Ko. `specs.table` reste
+accepté inline en repli.
+
+**`specs` obligatoire** : au premier test réel sur Render, la page specs
+(slide 2) est sortie quasi blanche — ni vue 3D ni tableau FR — sans aucune
+erreur : `core/assemble.py` saute silencieusement un tableau absent. Les
+arguments réellement envoyés par l'agent n'étant pas journalisés, on ne
+sait pas s'il avait omis `specs` ou envoyé un tableau vide ; dans les deux
+cas `assembler_pptx` refuse désormais explicitement (message indiquant
+d'appeler `traduire_mots(role='specs')` puis de passer
+`specs={"extraction_id": ...}`), et le contrôle de complétude de
+`verifier_rendu` signale une page specs vide.
 
 Mécanisme (`mcp_server/cache_disque.py`) : même principe que `pdf_cache`
 — SUR DISQUE (quelques Mo par image/PPTX, palier Render à 512 Mo),
@@ -366,10 +378,16 @@ d'exécution shell tout court. À confirmer par l'essai réel.
 
 ## Limites connues (honnêtes)
 
-- **Docker non testé en conditions réelles** sur ce poste (pas de Docker
-  disponible) — à vérifier au premier déploiement : build de l'image,
-  démarrage du conteneur, `fonts-liberation` effectivement pris en compte
-  par LibreOffice, rendu réel via `verifier_rendu`/`exporter_pdf`.
+- **Polices du rendu dans le conteneur : correctif pas encore vérifié.**
+  Image construite et déployée sur Render (commit `fe752d4`), pipeline
+  complet réussi avec un vrai agent Dust — mais le PDF produit avait des
+  espaces parasites au milieu des mots et des cotes cassées : `fonts-liberation`
+  est bien présente ET utilisée (LiberationSans embarquée dans le PDF), mais
+  les gabarits sont en Calibri, absente du conteneur. Correctif :
+  `fonts-crosextra-carlito` (équivalent métrique de Calibri). Non
+  reproductible sous Windows (Calibri installée) et pas de Docker sur ce
+  poste : à confirmer au prochain déploiement (le PDF doit embarquer
+  « Carlito », texte propre).
 - **`traduire_mots(glossaire_version=...)`** : seule la valeur `"latest"`
   est supportée — `data/glossaire.py` est un dictionnaire Python statique,
   pas versionné.

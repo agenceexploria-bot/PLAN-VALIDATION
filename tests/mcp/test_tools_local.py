@@ -274,6 +274,39 @@ def test_assembler_pptx_par_extraction_id_seulement(planche_300dpi):
     assert trad["labels"][0]["text"] in xml_planche  # labels repris sans retransmission
 
 
+def test_assembler_pptx_sans_specs_refuse(planche_300dpi):
+    """Premier test réel sur Render : page specs sortie VIDE (ni vue 3D ni
+    tableau), sans aucune erreur. Le tableau specs est obligatoire."""
+    eid = planche_300dpi["extraction_id"]
+    traduction.traduire_mots(extraction_id=eid, role="planche")
+    for specs in (None, {}, {"table": []}):
+        projet = {"meta": META_VALIDE, "planches": [{"extraction_id": eid}]}
+        if specs is not None:
+            projet["specs"] = specs
+        with pytest.raises(ValueError, match=r"specs.*traduire_mots\(extraction_id=\.\.\., role='specs'\)"):
+            assemblage.assembler_pptx(projet)
+
+
+def test_assembler_pptx_specs_par_extraction_id(pdf_id, planche_300dpi):
+    """Comme les labels : le tableau specs produit par traduire_mots(role='specs')
+    est rattaché à l'extraction, l'agent n'a pas à le retransmettre."""
+    from mcp_server import util
+    from pptx import Presentation
+    import io
+
+    page_specs = extraction.extraire_page(pdf_id=pdf_id, page_num=1, dpi=150, role="specs")
+    table = traduction.traduire_mots(extraction_id=page_specs["extraction_id"], role="specs")["table"]
+    eid = planche_300dpi["extraction_id"]
+    traduction.traduire_mots(extraction_id=eid, role="planche")
+    resultat = assemblage.assembler_pptx({
+        "meta": META_VALIDE, "specs": {"extraction_id": page_specs["extraction_id"]},
+        "planches": [{"extraction_id": eid}],
+    })
+    prs = Presentation(io.BytesIO(util.resoudre_pptx(None, resultat["pptx_id"])))
+    textes = [c.text for sh in prs.slides[1].shapes if sh.has_table for r in sh.table.rows for c in r.cells]
+    assert table[0][0] in textes
+
+
 def test_assembler_pptx_sans_traduire_mots_refuse(pdf_id):
     page = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
     with pytest.raises(ValueError, match=r"planches\[0\].*traduire_mots"):

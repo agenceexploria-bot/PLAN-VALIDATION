@@ -108,6 +108,16 @@ plan-validation-app/
   Windows...) — le besoin de portabilité du cahier des charges initial est
   donc couvert, sans sacrifier la fidélité du rendu quand PowerPoint
   fonctionne.
+- **Page de garde sans aucune image de plan ou de dessin (décision produit
+  définitive).** Les gabarits d'origine portent une grande photo générique
+  du monte-charge sur la moitié droite de la garde ; elle est désormais
+  RETIRÉE à l'assemblage (`assemble.retirer_images_de_plan_garde`, repérée
+  par sa taille, pas par son nom). La garde ne porte que la charte Vertical,
+  le titre, le n° d'affaire, le type d'équipement et les contacts projet ; la
+  vue 3D fabricant va toujours sur la page specs (slide 2), jamais sur la
+  garde. Les plans commencent systématiquement à la page 2.
+- **Page specs jamais vide.** Le contrôle de complétude (étape 4) signale
+  une page specs sans tableau FR (ni vue 3D) plutôt que de la laisser passer.
 
 ## Limites connues (honnêtes, pas de faux "c'est fait")
 
@@ -139,6 +149,16 @@ plan-validation-app/
   verticaux sont composés avec la police réduite pour tenir dans leur cellule
   source (`fit_bbox`) ; sur une planche très dense, le français plus long que
   l'original peut encore frôler un voisin — à contrôler au rendu.
+- **Polices du rendu LibreOffice sur Render : correctif pas encore vérifié
+  en conditions réelles.** Les gabarits sont en Calibri (police du thème).
+  Au premier rendu réel sur Render (LibreOffice 25.2, sans Calibri), le texte
+  sortait avec des espaces parasites au milieu des mots (« PLANS DE VALI
+  DATI ON ») et des étiquettes de cotes cassées sur plusieurs lignes —
+  jamais reproduit sous Windows (Calibri installée). Correctif :
+  `fonts-crosextra-carlito` (équivalent métrique de Calibri, substitué
+  automatiquement par LibreOffice) ajouté aux deux Dockerfiles. À confirmer
+  au prochain déploiement : le PDF exporté doit embarquer « Carlito »
+  (et non « LiberationSans ») et le texte doit être propre.
 - **PowerPoint COM peut laisser un processus `POWERPNT.EXE` résiduel** après
   usage intensif (quirk connu de l'automatisation COM, pas spécifique à
   cette app) : à fermer via le Gestionnaire des tâches si les exports

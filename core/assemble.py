@@ -4,8 +4,10 @@ core/assemble.py — Étape 4 du pipeline : assemblage du Plan de validation
 Vertical. Adapté de scripts/build_pptx.py du skill `plan-validation-vertical`
 (logique inchangée) :
 
-  garde (image générique FIXE conservée) · specs (vue 3D fournisseur à
-  gauche + callouts FR, tableau FR reconstruit à droite) · planches cotées.
+  garde (charte seule : AUCUNE image de plan ou de dessin — l'image générique
+  du gabarit est retirée, cf. retirer_images_de_plan_garde) · specs (vue 3D
+  fournisseur à gauche + callouts FR, tableau FR reconstruit à droite) ·
+  planches cotées.
   Structure conforme à references/cartouche.md et à la décision produit
   validée en session client (cr-session-2026-06-23.md : « Page après la
   garde = image 3D de la page 1 traduite en place + tableau de specs
@@ -221,6 +223,29 @@ def purger_cartouche(slide, meta: dict):
                                 break
                         if not remplace and MOTIF_NUMERO_AFFAIRE_CELLULE.match(texte):
                             run.text = str(meta.get("numero", CHAMPS_A_COMPLETER))
+
+
+# Décision produit DÉFINITIVE : la garde n'affiche jamais de représentation de
+# plan ou de dessin (ni l'image générique du monte-charge héritée du gabarit,
+# ni une vue 3D fabricant) — seulement la charte, le titre, le n° d'affaire,
+# le type d'équipement et les contacts. Toute shape IMAGE de la garde plus
+# grande que cette part de la surface de la slide est retirée. Repérée par sa
+# TAILLE, jamais par son nom (« Freeform 2 » dans LD82040, « Google Shape;88;p1 »
+# dans LD64397) : l'image générique occupe ~34 % de la slide, alors que le
+# logo, l'icône téléphone, le décor du bandeau et les photos des contacts
+# restent tous sous 4 %.
+PART_MAX_IMAGE_GARDE = 0.15
+
+
+def retirer_images_de_plan_garde(slide, surface_slide: int) -> int:
+    """Retire de la garde toute image de plan/dessin (cf. PART_MAX_IMAGE_GARDE).
+    Retourne le nombre de shapes retirées."""
+    a_retirer = [sh for sh in slide.shapes
+                 if "blip" in sh._element.xml
+                 and (sh.width or 0) * (sh.height or 0) > PART_MAX_IMAGE_GARDE * surface_slide]
+    for sh in a_retirer:
+        sh._element.getparent().remove(sh._element)
+    return len(a_retirer)
 
 
 def purger_page_de_couverture(slide, meta: dict):
@@ -510,10 +535,11 @@ def assembler(proj: dict) -> Path:
     # Élagage : garde + specs + autant de planches que demandé.
     trim_to(prs, 2 + len(planches))
 
-    # SLIDE 1 — page de garde : on CONSERVE l'image générique fixe du
-    # monte-charge (la 3D fournisseur va sur la page specs, jamais ici).
-    # Seuls n° LD / indice et les contacts changent.
+    # SLIDE 1 — page de garde : charte seule. L'image générique du gabarit est
+    # RETIRÉE (jamais de plan ni de dessin sur la garde — la 3D fournisseur va
+    # sur la page specs). Le n° LD / indice et les contacts sont mis à jour.
     s1 = prs.slides[0]
+    retirer_images_de_plan_garde(s1, prs.slide_width * prs.slide_height)
     purger_page_de_couverture(s1, meta)
     ensure_contacts(s1)
 

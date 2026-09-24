@@ -28,6 +28,14 @@ def test_taille_upload_bornee_avant_chargement_memoire():
     )
 
 
+def test_carlito_installee_pour_calibri():
+    """Les gabarits Vertical sont en Calibri (police du thème). Sans Carlito
+    (métriquement compatible Calibri, substituée automatiquement par
+    LibreOffice), le rendu Render sortait avec des espaces parasites au milieu
+    des mots et des étiquettes de cotes cassées sur plusieurs lignes."""
+    assert "fonts-crosextra-carlito" in DOCKERFILE
+
+
 def test_fonts_liberation_installees_pour_un_rendu_libreoffice_fidele():
     assert "fonts-liberation" in DOCKERFILE, (
         "Dockerfile : fonts-liberation manquant — sans les polices "

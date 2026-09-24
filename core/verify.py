@@ -217,6 +217,20 @@ def controle_completude(pptx_path: Path, meta: dict, rubriques_specs: dict = Non
                     f"non retiré (« {debut}… »)."
                 )
 
+    # Page specs (slide 2) : doit porter au moins le tableau FR reconstruit
+    # (constaté au premier test réel sur Render : page quasi blanche, passée
+    # sans alerte). Le tableau FR est un tableau EN PLUS du cartouche ; la vue
+    # 3D, une image bien plus grande que les logos de la charte.
+    if len(prs.slides) >= 2:
+        s2 = prs.slides[1]
+        surface = prs.slide_width * prs.slide_height
+        tableau_fr = sum(1 for sh in s2.shapes if sh.has_table) >= 2
+        vue_3d = any(sh.shape_type == 13 and sh.width * sh.height > 0.05 * surface for sh in s2.shapes)
+        if not tableau_fr and not vue_3d:
+            alertes.append("Page specs (slide 2) vide : ni tableau FR ni vue 3D.")
+        elif not tableau_fr:
+            alertes.append("Page specs (slide 2) : tableau FR absent (seule la vue 3D est posée).")
+
     slide_garde = prs.slides[0]
     texte_garde = " ".join(
         sh.text_frame.text for sh in slide_garde.shapes if sh.has_text_frame

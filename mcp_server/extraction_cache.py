@@ -30,8 +30,8 @@ du process vide simplement le registre.
 Une entrée porte aussi, pour `assembler_pptx` (qui reçoit une planche ou la
 vue 3D par `extraction_id`, jamais en base64 — cf. mcp_server/cache_disque.py) :
 les images de la page (identifiants dans `cache_disque.IMAGES`, les octets
-restent SUR DISQUE) et les labels produits par `traduire_mots` sur cette
-page. Lire l'entrée prolonge aussi ses images : elles vivent aussi
+restent SUR DISQUE) et la sortie de `traduire_mots` sur cette page (labels
+d'une planche, tableau d'une page specs). Lire l'entrée prolonge aussi ses images : elles vivent aussi
 longtemps que l'extraction qui les référence.
 """
 import secrets
@@ -66,7 +66,7 @@ def mettre_en_cache(words_data: dict, images: dict[str, bytes] | None = None) ->
         _purger_expires()
         extraction_id = secrets.token_urlsafe(32)
         _REGISTRE[extraction_id] = {
-            "donnees": words_data, "images": ids_images, "labels": None,
+            "donnees": words_data, "images": ids_images, "traductions": {},
             "expire_a": time.monotonic() + DUREE_VIE_SECONDES,
         }
     return {"extraction_id": extraction_id, "expire_dans_s": DUREE_VIE_SECONDES}
@@ -105,16 +105,18 @@ def recuperer_image(extraction_id: str, nom: str) -> bytes | None:
     return cache_disque.IMAGES.recuperer(info["images"][nom])
 
 
-def enregistrer_labels(extraction_id: str, labels: list) -> None:
-    """Rattache à l'extraction les labels produits par `traduire_mots`, pour
-    qu'`assembler_pptx` les reprenne sans que l'agent les retransmette."""
+def enregistrer_traduction(extraction_id: str, role: str, valeur: list) -> None:
+    """Rattache à l'extraction la sortie de `traduire_mots` pour `role`
+    ("planche" : labels ; "specs" : tableau), pour qu'`assembler_pptx` la
+    reprenne sans que l'agent la retransmette."""
     info = _entree(extraction_id)
     if info is not None:
-        info["labels"] = labels
+        info["traductions"][role] = valeur
 
 
-def recuperer_labels(extraction_id: str) -> list | None:
-    """Labels enregistrés par `traduire_mots` pour cette extraction, ou None
-    si `traduire_mots` n'a pas (encore) été appelé dessus."""
+def recuperer_traduction(extraction_id: str, role: str) -> list | None:
+    """Sortie de `traduire_mots` enregistrée pour `role` sur cette
+    extraction, ou None si `traduire_mots` n'a pas (encore) été appelé
+    dessus avec ce rôle."""
     info = _entree(extraction_id)
-    return None if info is None else info["labels"]
+    return None if info is None else info["traductions"].get(role)

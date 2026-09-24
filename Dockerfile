@@ -14,11 +14,17 @@ FROM python:3.11-slim
 # Roman/Courier New — sans elles, LibreOffice substitue une police par
 # défaut aux largeurs différentes (interlignes, débordements de texte), et
 # le rendu de vérification/export diverge de la référence PowerPoint.
+# `fonts-crosextra-carlito` : équivalent métrique de Calibri, police du thème
+# des gabarits Vertical (tout le texte en hérite) — LibreOffice la substitue
+# automatiquement à Calibri. Sans elle, le premier rendu réel sur Render
+# sortait avec des espaces parasites au milieu des mots (« VALI DATI ON ») et
+# des étiquettes de cotes cassées sur plusieurs lignes.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         libreoffice-core \
         libreoffice-impress \
         fonts-liberation \
+        fonts-crosextra-carlito \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

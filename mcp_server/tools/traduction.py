@@ -44,7 +44,9 @@ def traduire_mots(
       - "specs" : `table` (liste [libellé_fr, valeur]) avec les rubriques
         commerciales absentes du plan fabricant automatiquement ajoutées et
         marquées "à confirmer (service commercial)"
-        (`rubriques_commerciales_ajoutees`), `hors_glossaire`.
+        (`rubriques_commerciales_ajoutees`), `hors_glossaire`. Avec
+        `extraction_id`, ce tableau est AUSSI rattaché à l'extraction :
+        `assembler_pptx(specs={"extraction_id": ...})` le reprend seul.
 
     `glossaire_version` : seule la valeur "latest" est supportée — le
     glossaire Vertical (data/glossaire.py) est un dictionnaire Python
@@ -63,7 +65,7 @@ def traduire_mots(
     if role == "planche":
         labels, hors_glossaire = translate.traduire_labels_planche(words_data)
         if extraction_id:
-            extraction_cache.enregistrer_labels(extraction_id, labels)
+            extraction_cache.enregistrer_traduction(extraction_id, "planche", labels)
         return {
             "labels": labels,
             "page_w_pt": words_data["page_size_pts"][0],
@@ -72,8 +74,11 @@ def traduire_mots(
 
     table_fr, hors_glossaire = translate.extraire_tableau_specs(words_data)
     table_fr, ajouts = translate.completer_champs_commerciaux(table_fr)
+    table = [list(ligne) for ligne in table_fr]
+    if extraction_id:
+        extraction_cache.enregistrer_traduction(extraction_id, "specs", table)
     return {
-        "table": [list(ligne) for ligne in table_fr],
+        "table": table,
         "hors_glossaire": hors_glossaire,
         "rubriques_commerciales_ajoutees": ajouts,
     }

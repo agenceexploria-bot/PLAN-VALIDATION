@@ -12,11 +12,15 @@ FROM python:3.11-slim
 # serveur MCP — cf. core/render.py, bascule automatique). `fonts-liberation`
 # (métriquement compatibles Arial/Times/Courier) pour un rendu fidèle, cf.
 # Dockerfile racine (même correctif LOT E, même raison).
+# `fonts-crosextra-carlito` (équivalent métrique de Calibri, police du thème
+# des gabarits) : cf. Dockerfile racine — sans elle, le premier déploiement
+# Render réel rendait des mots coupés d'espaces parasites et des cotes cassées.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         libreoffice-core \
         libreoffice-impress \
         fonts-liberation \
+        fonts-crosextra-carlito \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

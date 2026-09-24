@@ -92,7 +92,7 @@ def test_bloc_specs_residuel_detecte_par_completude(tmp_path):
     out = tmp_path / "test.pptx"
     proj = {
         "base": assemble.base_pour_type("non accompagné"), "out": out,
-        "workdir": tmp_path, "meta": meta, "specs": {}, "planches": [],
+        "workdir": tmp_path, "meta": meta, "specs": {"table": [("Modèle", "TEST")]}, "planches": [],
     }
     assemble.assembler(proj)
 
@@ -111,6 +111,21 @@ def test_bloc_specs_residuel_detecte_par_completude(tmp_path):
 
     alertes = verify.controle_completude(out, meta)
     assert any("bloc de spécifications d'un ancien projet" in a for a in alertes)
+
+
+def test_page_specs_vide_signalee_par_completude(tmp_path):
+    """Constaté au premier test réel sur Render : page 2 (specs) sans vue 3D
+    ni tableau FR, passée sans aucune alerte. La page specs doit toujours
+    porter au moins le tableau FR reconstruit."""
+    meta = {"numero": "LDTEST301", "client": "Client Test", "dessinateur": "AB",
+            "indice": "R00", "date": "01/01/2026", "equipement": "MONTE-CHARGE"}
+    out = tmp_path / "vide.pptx"
+    assemble.assembler({
+        "base": assemble.base_pour_type("non accompagné"), "out": out,
+        "workdir": tmp_path, "meta": meta, "specs": {}, "planches": [],
+    })
+    alertes = verify.controle_completude(out, meta)
+    assert any("page specs" in a.lower() and "vide" in a.lower() for a in alertes), alertes
 
 
 def _checklist_non_vierge(tmp_path, lignes):
