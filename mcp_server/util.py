@@ -20,6 +20,8 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from mcp.server.mcpserver.exceptions import ToolError
+
 from . import cache_disque, extraction_cache, pdf_cache
 
 # Même limite que app.py::LIMITE_PDF_MO (app Streamlit) — un PDF fabricant
@@ -178,6 +180,29 @@ def resoudre_pptx(pptx_base64: str | None, pptx_id: str | None) -> bytes:
             raise ValueError(f"pptx_id {pptx_id!r} inconnu ou expiré — relancez assembler_pptx.")
         return contenu
     return decoder_base64(pptx_base64, "pptx_base64")
+
+
+@contextmanager
+def echec_rendu_explicite(outil: str):
+    """Entoure l'appel au moteur de rendu (core/render.py) de
+    `verifier_rendu` / `exporter_pdf`. Un échec du moteur (LibreOffice seul
+    sous Docker/Render, PowerPoint/COM en local) lève RuntimeError, OSError,
+    com_error... : pour le SDK mcp ce sont des « plantages », dont le texte
+    n'est JAMAIS transmis à l'agent (« Error executing tool <nom> »). Converti
+    ici en ToolError, avec le détail du moteur, pour que l'agent explique le
+    problème à l'utilisateur plutôt que de réessayer à l'aveugle. ValueError
+    (ex. moteur inconnu) est laissée telle quelle : déjà relayée par
+    server.py::_erreurs_explicites."""
+    try:
+        yield
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ToolError(
+            f"{outil} : échec du moteur de rendu côté serveur — ce n'est pas une "
+            "erreur dans vos arguments, inutile de réessayer tel quel ; "
+            f"signalez-le à l'utilisateur. Détail : {e}"
+        ) from e
 
 
 def encoder_fichier(chemin: Path) -> str:

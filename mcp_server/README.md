@@ -192,10 +192,12 @@ sur `traduire_mots` (message nommant le champ en cause) n'atteignait donc
 jamais l'agent Dust : seuls les tests en appel Python direct le voyaient.
 `server.py::_erreurs_explicites` convertit désormais toute `ValueError` en
 `ToolError` à l'enregistrement des outils (vérifié sur le vrai protocole,
-`tests/mcp/test_server_http.py`). Les autres exceptions (vrais plantages,
-y compris l'échec de TOUS les moteurs de rendu — `RuntimeError` de
-`core/render.py`) restent masquées côté client, comme le veut le SDK — cf.
-Limites connues.
+`tests/mcp/test_server_http.py`). Même traitement pour un échec du moteur
+de rendu dans `verifier_rendu` / `exporter_pdf` (`util.echec_rendu_explicite`,
+LibreOffice seul sous Docker/Render) : `ToolError` portant le détail du
+moteur, et précisant à l'agent que ses arguments ne sont pas en cause (à
+signaler à l'utilisateur, pas à réessayer tel quel). Les autres exceptions
+(vrais plantages) restent masquées côté client, comme le veut le SDK.
 
 `assembler_pptx` valide en plus toute son entrée AVANT le montage et nomme
 le champ en cause (`planches[1].extraction_id`, `planches[0].labels[3].bbox`,
@@ -392,11 +394,6 @@ d'exécution shell tout court. À confirmer par l'essai réel.
   `pdf_cache.purger_dossiers_orphelins_au_demarrage` — rien d'équivalent
   n'est nécessaire pour `extraction_cache`, qui n'écrit jamais sur disque),
   pas de fuite accumulée entre redémarrages.
-- **Échec du rendu non lisible par l'agent** : si aucun moteur de rendu
-  n'est disponible (`RuntimeError` de `core/render.py`), `verifier_rendu` /
-  `exporter_pdf` renvoient seulement « Error executing tool ... » (cause
-  dans les logs serveur). Non converti en `ToolError` pour l'instant : à
-  décider.
 - **Téléchargement interrompu = lien définitivement grillé.** Le jeton est
   invalidé et le fichier supprimé du disque dès que le serveur COMMENCE à
   répondre au `GET`, pas une fois la réception confirmée côté client. Une

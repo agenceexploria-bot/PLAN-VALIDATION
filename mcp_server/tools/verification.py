@@ -69,7 +69,8 @@ def verifier_rendu(
         pptx_path = wd / "plan.pptx"
         pptx_path.write_bytes(contenu)
 
-        resultat_rendu = render.rendre_pngs(pptx_path, wd / "render")
+        with util.echec_rendu_explicite("verifier_rendu"):
+            resultat_rendu = render.rendre_pngs(pptx_path, wd / "render")
         slides = []
         for p in resultat_rendu["pngs"]:
             publication = fichiers.publier(p, p.name, "image/png")

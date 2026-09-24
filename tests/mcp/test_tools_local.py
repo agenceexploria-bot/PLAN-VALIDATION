@@ -309,6 +309,31 @@ def test_verifier_rendu_et_exporter_pdf_pptx_id_inconnu_refuse():
         verification.verifier_rendu()
 
 
+@pytest.mark.parametrize("exception", [
+    RuntimeError("LibreOffice : Échec de la conversion (code 1)"),
+    OSError("LibreOffice : soffice introuvable"),  # autre type que RuntimeError (ex. com_error)
+])
+def test_echec_du_moteur_de_rendu_lisible_par_l_agent(monkeypatch, exception):
+    """Même bug que les ValueError : un échec du moteur de rendu (seul
+    LibreOffice sous Docker/Render) arrivait à l'agent réduit à « Error
+    executing tool ... ». Il doit lever une ToolError — seul type dont le SDK
+    mcp transmet le texte — portant le détail du moteur."""
+    from mcp.server.mcpserver.exceptions import ToolError
+    from core import render
+
+    def _echoue(*args, **kwargs):
+        raise exception
+
+    monkeypatch.setattr(render, "rendre_pngs", _echoue)
+    monkeypatch.setattr(render, "exporter_pdf", _echoue)
+    pptx_b64 = base64.b64encode(b"PK\x03\x04 pptx factice").decode("ascii")
+
+    with pytest.raises(ToolError, match=r"verifier_rendu : échec du moteur de rendu.*LibreOffice"):
+        verification.verifier_rendu(pptx_b64)
+    with pytest.raises(ToolError, match=r"exporter_pdf : échec du moteur de rendu.*LibreOffice"):
+        export.exporter_pdf(pptx_b64, valide=True, moteur="libreoffice")
+
+
 @pytest.fixture(scope="module")
 def rendu_verifie(projet_assemble):
     """words_par_page passe l'extraction_id de chaque page, PAS le words_data

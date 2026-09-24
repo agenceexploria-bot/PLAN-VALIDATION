@@ -67,7 +67,8 @@ def exporter_pdf(
     with util.workdir_temporaire() as wd:
         pptx_path = wd / "plan.pptx"
         pptx_path.write_bytes(contenu)
-        resultat = render.exporter_pdf(pptx_path, moteur=moteur)
+        with util.echec_rendu_explicite("exporter_pdf"):
+            resultat = render.exporter_pdf(pptx_path, moteur=moteur)
         pdf_path = Path(resultat["pdf"])
         publication = fichiers.publier(pdf_path, pdf_path.name, "application/pdf")
         return {
