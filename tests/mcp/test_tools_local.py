@@ -238,6 +238,77 @@ def test_assembler_pptx_numero_mal_forme_refuse():
         }})
 
 
+META_VALIDE = {"numero": "LDMCP004", "client": "X", "dessinateur": "AB",
+               "indice": "R00", "type_equipement": "non accompagné"}
+
+
+@pytest.fixture(scope="module")
+def planche_300dpi(pdf_id):
+    """Planche A3 à 300 dpi (4961×3508 px) : la taille RÉELLE du cas qui a
+    fait échouer un agent Dust (image en base64 ≈ 165k jetons)."""
+    return extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=300, role="planche")
+
+
+def test_assembler_pptx_par_extraction_id_seulement(planche_300dpi):
+    """Chemin NORMAL : la planche passe par son seul extraction_id — le
+    serveur retrouve l'image pleine résolution, la largeur de page et les
+    labels de traduire_mots. Le pptx_id retourné résout le PPTX produit."""
+    import io
+    import zipfile
+    from PIL import Image
+    from mcp_server import util
+
+    eid = planche_300dpi["extraction_id"]
+    trad = traduction.traduire_mots(extraction_id=eid, role="planche")
+    resultat = assemblage.assembler_pptx({
+        "meta": META_VALIDE, "specs": {"table": [["Modèle", "TEST"]]},
+        "planches": [{"extraction_id": eid}],
+    })
+    pptx = util.resoudre_pptx(None, resultat["pptx_id"])
+    assert pptx == _contenu_publie(resultat["pptx_url"])
+    with zipfile.ZipFile(io.BytesIO(pptx)) as z:
+        tailles = [Image.open(io.BytesIO(z.read(n))).size
+                   for n in z.namelist() if n.startswith("ppt/media/") and n.endswith(".png")]
+        xml_planche = z.read("ppt/slides/slide3.xml").decode("utf-8")
+    assert (4961, 3508) in tailles, tailles
+    assert trad["labels"][0]["text"] in xml_planche  # labels repris sans retransmission
+
+
+def test_assembler_pptx_sans_traduire_mots_refuse(pdf_id):
+    page = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
+    with pytest.raises(ValueError, match=r"planches\[0\].*traduire_mots"):
+        assemblage.assembler_pptx({"meta": META_VALIDE, "planches": [{"extraction_id": page["extraction_id"]}]})
+
+
+def test_assembler_pptx_extraction_garde_comme_planche_refuse(pdf_id):
+    garde = extraction.extraire_page(pdf_id=pdf_id, page_num=1, dpi=150, role="garde")
+    with pytest.raises(ValueError, match=r"planches\[0\]\.extraction_id.*role='planche'"):
+        assemblage.assembler_pptx({"meta": META_VALIDE, "planches": [{"extraction_id": garde["extraction_id"]}]})
+
+
+@pytest.mark.parametrize("planche, attendu", [
+    ({"page_n": 2}, r"planches\[0\] : fournir exactement un"),
+    ({"extraction_id": "jeton-inexistant"}, r"planches\[0\]\.extraction_id .* inconnu ou expiré"),
+    ({"image_base64": "pas du base64 !"}, r"planches\[0\]\.image_base64 : base64 invalide"),
+    ({"image_base64": "iVBORw0KGgo=", "labels": [{"text": "x", "bbox": [1, 2]}]}, r"planches\[0\]\.labels\[0\]\.bbox"),
+    ({"image_base64": "iVBORw0KGgo=", "page_w_pt": "A3"}, r"planches\[0\]\.page_w_pt"),
+])
+def test_assembler_pptx_entree_malformee_nomme_le_champ(planche, attendu):
+    """Bug d'origine : assembler_pptx échouait sur un KeyError/binascii.Error
+    opaque. Chaque entrée malformée doit nommer le champ en cause."""
+    with pytest.raises(ValueError, match=attendu):
+        assemblage.assembler_pptx({"meta": META_VALIDE, "planches": [planche]})
+
+
+def test_verifier_rendu_et_exporter_pdf_pptx_id_inconnu_refuse():
+    with pytest.raises(ValueError, match="pptx_id .* relancez assembler_pptx"):
+        verification.verifier_rendu(pptx_id="jeton-inexistant")
+    with pytest.raises(ValueError, match="pptx_id .* relancez assembler_pptx"):
+        export.exporter_pdf(pptx_id="jeton-inexistant", valide=True)
+    with pytest.raises(ValueError, match="exactement un de pptx_id ou pptx_base64"):
+        verification.verifier_rendu()
+
+
 @pytest.fixture(scope="module")
 def rendu_verifie(projet_assemble):
     """words_par_page passe l'extraction_id de chaque page, PAS le words_data

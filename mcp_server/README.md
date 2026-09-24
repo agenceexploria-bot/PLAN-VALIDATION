@@ -24,17 +24,26 @@ même code `core/`, jamais le même déploiement.
 | `inventaire_pdf` | 1 | Nombre de pages, taille, aperçu basse résolution — pour classer les pages ; met le PDF en cache et retourne `pdf_id` |
 | `extraire_page` | 2 | Rendu + mots détectés d'UNE page (`role="planche"\|"garde"\|"specs"`), référencée par `pdf_id` ; met sa réponse en cache et retourne `extraction_id` |
 | `traduire_mots` | 3 | Glossaire Vertical appliqué aux mots d'une page déjà extraite, référencée par `extraction_id` |
-| `assembler_pptx` | 4 | Montage du PPTX (copie d'un plan existant, jamais un template vide) |
-| `verifier_rendu` | 5 | Rendu par slide (LibreOffice) + rapport de vérification — portail obligatoire ; `words_par_page` référencée par `extraction_id` |
-| `exporter_pdf` | 6 | Export PDF final, refuse sans `valide=True` |
+| `assembler_pptx` | 4 | Montage du PPTX (copie d'un plan existant, jamais un template vide) ; planches et vue 3D référencées par `extraction_id` ; met le PPTX en cache et retourne `pptx_id` |
+| `verifier_rendu` | 5 | Rendu par slide (LibreOffice) + rapport de vérification — portail obligatoire ; PPTX référencé par `pptx_id`, `words_par_page` par `extraction_id` |
+| `exporter_pdf` | 6 | Export PDF final, refuse sans `valide=True` ; PPTX référencé par `pptx_id` |
 
 Chaque outil a une description détaillée dans son propre docstring
 (`mcp_server/tools/*.py`) — c'est ce que l'agent Dust lit pour savoir quand
 et comment l'utiliser. Ordre d'appel attendu : `inventaire_pdf` →
 `extraire_page` (par page retenue, obtenir `extraction_id`) →
-`traduire_mots(extraction_id=...)` → `assembler_pptx` →
-`verifier_rendu(words_par_page={page: extraction_id, ...})` (montrer les
-images à l'utilisateur, obtenir son accord) → `exporter_pdf`.
+`traduire_mots(extraction_id=...)` →
+`assembler_pptx(planches=[{extraction_id}, ...], view3d={extraction_id})`
+(obtenir `pptx_id`) → `verifier_rendu(pptx_id=..., words_par_page={page:
+extraction_id, ...})` (montrer les images à l'utilisateur, obtenir son
+accord) → `exporter_pdf(pptx_id=..., valide=True)`.
+
+**Principe général, appliqué à TOUTES les entrées** (cf. sections
+suivantes) : aucun blob (PDF, image, PPTX, JSON de mots) ne transite par
+l'agent d'un outil à l'autre. Chaque outil qui produit une donnée
+volumineuse la garde côté serveur et renvoie un identifiant ; l'outil
+suivant reçoit cet identifiant. Le contenu brut (base64/JSON) reste accepté
+en repli partout, pour les petits fichiers et les tests directs.
 
 ## Le PDF fabricant en entrée : téléversé une seule fois hors canal MCP, référencé par `pdf_id`
 
@@ -131,6 +140,68 @@ glissante. Rien à purger au démarrage (rien n'est écrit sur disque) — un
 redémarrage du process vide simplement le registre, comme pour le reste de
 l'état en mémoire (registre de téléchargement, cache PDF).
 
+## Images et PPTX : mis en cache, référencés par `extraction_id` / `pptx_id`
+
+Troisième occurrence de la même famille, en conditions réelles :
+`assembler_pptx` exigeait l'image de planche en base64 — une planche A3 à
+300 dpi (4961×3508 px) représentait ~165k jetons selon l'agent Dust
+lui-même, pour ~48k disponibles. Plutôt qu'un correctif de plus au cas par
+cas, audit de toutes les entrées des 6 outils :
+
+| Outil | Entrée volumineuse | Référence acceptée |
+|---|---|---|
+| `inventaire_pdf`, `extraire_page` | `pdf_base64` | `pdf_id` (déjà) |
+| `traduire_mots` | `words_data` | `extraction_id` (déjà) |
+| `assembler_pptx` | `planches[].image_base64`, `view3d.image_base64` | `extraction_id` de la page (**nouveau**) |
+| `assembler_pptx` | `planches[].labels` (sortie de `traduire_mots`, agrégée sur N planches) | repris automatiquement via le même `extraction_id` (**nouveau**) |
+| `assembler_pptx` | `planches[].page_w_pt`, `page_n`, `view3d.image_page_w_pt` | repris via `extraction_id` — plus aucune valeur retapée par l'agent (**nouveau**) |
+| `verifier_rendu`, `exporter_pdf` | `pptx_base64` (PPTX de plusieurs Mo — pas encore vu échouer, mais pire cas que la planche) | `pptx_id` (**nouveau**) |
+| `verifier_rendu` | `words_par_page` | `extraction_id` par page (déjà) |
+
+Restent inline, volontairement : `meta`, `specs.table` (quelques dizaines
+de lignes), `view3d.callouts` et `hors_glossaire` (optionnels) — de
+l'ordre du Ko.
+
+Mécanisme (`mcp_server/cache_disque.py`) : même principe que `pdf_cache`
+— SUR DISQUE (quelques Mo par image/PPTX, palier Render à 512 Mo),
+identifiant imprévisible, réutilisable, 30 min glissantes, purge des
+dossiers orphelins au démarrage. `extraire_page` y range l'image de la
+planche (`role="planche"`) et la vue 3D (`role="garde"`), rattachées à
+l'`extraction_id` ; `traduire_mots(extraction_id=...)` y rattache ses
+labels ; lire l'extraction prolonge aussi ses images.
+`assembler_pptx` range le PPTX produit et retourne `pptx_id`.
+
+⚠️ Décision : **`extraction_id`, pas l'`image_url`** d'`extraire_page`,
+comme référence d'image. Les URLs de téléchargement sont à usage unique et
+expirent en 5 min (modèle de sécurité des liens destinés à l'utilisateur
+final) : un agent qui a déjà ouvert l'image pour la montrer, ou un
+pipeline plus long que 5 min, aurait cassé l'assemblage. Les URLs restent
+renvoyées, uniquement pour MONTRER un fichier à l'utilisateur.
+
+`planches[].labels` fourni explicitement reste accepté pour SURCHARGER les
+labels de `traduire_mots`. Appeler `assembler_pptx` sur une planche sans
+avoir appelé `traduire_mots` dessus est refusé explicitement.
+
+## Erreurs d'outil : lisibles par l'agent
+
+Bug trouvé en analysant l'échec d'`assembler_pptx` : le SDK `mcp` 2.x ne
+transmet au client QUE le texte d'une `ToolError`. Toute autre exception
+— dont les `ValueError` que nos outils lèvent pour une entrée refusée —
+arrivait réduite à « Error executing tool <nom> ». Le correctif précédent
+sur `traduire_mots` (message nommant le champ en cause) n'atteignait donc
+jamais l'agent Dust : seuls les tests en appel Python direct le voyaient.
+`server.py::_erreurs_explicites` convertit désormais toute `ValueError` en
+`ToolError` à l'enregistrement des outils (vérifié sur le vrai protocole,
+`tests/mcp/test_server_http.py`). Les autres exceptions (vrais plantages,
+y compris l'échec de TOUS les moteurs de rendu — `RuntimeError` de
+`core/render.py`) restent masquées côté client, comme le veut le SDK — cf.
+Limites connues.
+
+`assembler_pptx` valide en plus toute son entrée AVANT le montage et nomme
+le champ en cause (`planches[1].extraction_id`, `planches[0].labels[3].bbox`,
+`view3d.image_base64 : base64 invalide`...), au lieu d'un `KeyError` /
+`binascii.Error` opaque.
+
 ## Fichiers binaires en sortie : des URLs, jamais du contenu inline
 
 Le SDK MCP officiel (streamable-http, `mcp>=2.0`) plafonne à **1 Mio** la
@@ -142,13 +213,11 @@ produit un fichier (image, PPTX, PDF) renvoie donc une **URL de
 téléchargement à usage unique** (`..._url` + `..._sha256`), jamais le
 contenu en base64.
 
-Flux pour l'agent : `GET` l'URL → ré-encoder les octets reçus en base64 →
-fournir ce base64 en entrée de l'outil suivant qui en a besoin (ex.
-`extraire_page.image_url` → `assembler_pptx.planches[].image_base64`). Les
-*entrées* des outils restent en base64 classique, sans limite particulière
-(bornées par `TAILLE_MAX_REQUETE_OCTETS`, cf. `server.py`) — à l'exception
-du PDF fabricant, transmis une seule fois (cf. section précédente,
-`pdf_id`).
+Ces URLs servent uniquement à MONTRER un fichier à l'utilisateur (images
+de vérification, PPTX, PDF final). L'agent ne doit jamais les télécharger
+pour ré-encoder le contenu en base64 et le passer à l'outil suivant :
+celui-ci reçoit un identifiant (`extraction_id`, `pptx_id`, cf. section
+précédente).
 
 Sécurité du lien (`mcp_server/fichiers.py`) — comme une URL S3 pré-signée :
 jeton aléatoire imprévisible (256 bits), à usage unique (supprimé dès le
@@ -193,7 +262,11 @@ pytest tests/mcp/
 - `test_server_http.py` — le **vrai protocole MCP** (process serveur séparé
   + vrai client MCP) : jeton Bearer exigé, liste des outils, appel réel
   d'outil, téléchargement réel d'un fichier publié, upload réel via un
-  process `curl` externe (pas le client MCP Python) sur `POST /pdfs`.
+  process `curl` externe (pas le client MCP Python) sur `POST /pdfs`,
+  messages d'erreur lisibles côté client, et **scénario agent Dust
+  complet** (`test_scenario_agent_dust_references_uniquement`) : PDF A3,
+  extraction à 300 dpi, chaque argument d'appel mesuré (< 8 Ko), image de
+  planche en pleine résolution (4961×3508) dans le PPTX produit.
 - `test_deploiement_mcp.py` — contrôles statiques sur `Dockerfile` /
   `requirements.txt` (fonts-liberation, versions épinglées).
 
@@ -300,8 +373,10 @@ d'exécution shell tout court. À confirmer par l'essai réel.
   pas versionné.
 - **Vue 3D fournisseur non traduite** (callouts) : limite déjà connue du
   pipeline `core/`, pas spécifique au serveur MCP — cf. README racine.
-- **Un seul process, sans état partagé entre appels — sauf le PDF fabricant
-  et les données de mots extraits en cache** (voir `mcp_server/util.py`) :
+- **Un seul process, sans état partagé entre appels — sauf le PDF fabricant,
+  les données de mots extraits, leurs images et le PPTX assemblé en cache**
+  (voir `mcp_server/util.py`, `mcp_server/cache_disque.py` — un redémarrage
+  invalide aussi tout `pptx_id` en cours : relancer `assembler_pptx`) :
   chaque appel a son propre dossier de travail jetable. Le registre de
   fichiers publiés (`mcp_server/fichiers.py`), le cache du PDF en cours
   (`mcp_server/pdf_cache.py`) et le cache des extractions en cours
@@ -317,6 +392,11 @@ d'exécution shell tout court. À confirmer par l'essai réel.
   `pdf_cache.purger_dossiers_orphelins_au_demarrage` — rien d'équivalent
   n'est nécessaire pour `extraction_cache`, qui n'écrit jamais sur disque),
   pas de fuite accumulée entre redémarrages.
+- **Échec du rendu non lisible par l'agent** : si aucun moteur de rendu
+  n'est disponible (`RuntimeError` de `core/render.py`), `verifier_rendu` /
+  `exporter_pdf` renvoient seulement « Error executing tool ... » (cause
+  dans les logs serveur). Non converti en `ToolError` pour l'instant : à
+  décider.
 - **Téléchargement interrompu = lien définitivement grillé.** Le jeton est
   invalidé et le fichier supprimé du disque dès que le serveur COMMENCE à
   répondre au `GET`, pas une fois la réception confirmée côté client. Une

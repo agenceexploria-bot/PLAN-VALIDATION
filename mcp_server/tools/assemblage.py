@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """mcp_server/tools/assemblage.py — outil MCP `assembler_pptx` (étape 4)."""
-import base64
 import re
 from datetime import date
+from numbers import Real
 from typing import Any
 
 from pptx import Presentation
 
 from core import assemble
 
-from .. import fichiers, util
+from .. import cache_disque, extraction_cache, fichiers, util
 
 NUMERO_AFFAIRE = re.compile(r"^LD\w+$", re.IGNORECASE)
 CHAMPS_META_OBLIGATOIRES = ("numero", "client", "dessinateur", "indice", "type_equipement")
@@ -25,31 +25,44 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
     n'est jamais redessiné : chaque planche est l'image déjà extraite et
     rédigée par `extraire_page`, déposée telle quelle.
 
-    Schéma attendu de `projet_json` :
+    Schéma attendu de `projet_json` (chemin NORMAL : uniquement des
+    identifiants, le serveur retrouve lui-même images, largeurs de page et
+    labels) :
     {
       "meta": {"numero": "LDxxxxx", "client": str, "dessinateur": str,
                "indice": "R00", "date": "JJ/MM/AAAA" (optionnel, aujourd'hui
                par défaut), "type_equipement": "non accompagné"|"accompagné"},
-      "view3d": {"image_base64": str, "image_page_w_pt": float,
-                 "callouts": [...]} | null,
+      "view3d": {"extraction_id": str, "callouts": [...] (optionnel)} | null,
+                 # extraction_id de la page extraite avec role="garde"
       "specs": {"table": [[libelle_fr, valeur], ...]},
-      "planches": [{"image_base64": str, "page_n": int, "page_w_pt": float,
-                     "labels": [...]}, ...],
+      "planches": [{"extraction_id": str}, ...],
+                 # extraction_id de chaque page extraite avec role="planche",
+                 # APRÈS traduire_mots(extraction_id=...) sur cette page
       "hors_glossaire": [...]  # optionnel, agrégé depuis traduire_mots —
                                  simplement repris dans le résumé renvoyé.
     }
+
+    NE TÉLÉCHARGEZ JAMAIS les images pour les ré-encoder en base64 : une
+    planche A3 à 300 dpi représente ~165k jetons, un agent Dust réel a
+    échoué dessus. `planches[].labels` reste accepté pour SURCHARGER les
+    labels de `traduire_mots`. Repli (petits fichiers / tests directs), à la
+    place d'`extraction_id` : `{"image_base64", "page_n", "page_w_pt",
+    "labels"}` pour une planche, `{"image_base64", "image_page_w_pt",
+    "callouts"}` pour la vue 3D. Toute entrée invalide est refusée avec une
+    erreur nommant le champ en cause (ex. `planches[1].extraction_id`).
 
     Aucune métadonnée n'est jamais fictive : chaque champ de `meta` est
     obligatoire (numéro au format LDxxxxx), l'appel échoue explicitement
     sinon plutôt que de générer un cartouche avec une valeur inventée.
 
-    Retourne {"pptx_url": str, "pptx_sha256": str, "nom_fichier": str,
-    "resume": {...}} — `pptx_url` est une URL de téléchargement à usage
-    unique (5 min de durée de vie) : un PPTX réel dépasse largement la
-    limite de 1 Mio par réponse d'outil du protocole MCP. Récupérez-le par
-    un GET simple, puis ré-encodez-le en base64 pour `verifier_rendu` /
-    `exporter_pdf`.
+    Retourne {"pptx_id": str, "pptx_url": str, "pptx_sha256": str,
+    "nom_fichier": str, "resume": {...}} — passez `pptx_id` tel quel à
+    `verifier_rendu` puis `exporter_pdf` (PPTX gardé sur le serveur, 30 min
+    glissantes). `pptx_url` (usage unique, 5 min) sert seulement à donner le
+    PPTX à l'utilisateur s'il le demande.
     """
+    if not isinstance(projet_json, dict):
+        raise ValueError("projet_json doit être un objet JSON.")
     meta_in = projet_json.get("meta") or {}
     for champ in CHAMPS_META_OBLIGATOIRES:
         if not str(meta_in.get(champ, "")).strip():
@@ -69,45 +82,48 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
 
     base = assemble.base_pour_type(meta["type_equipement"])
 
+    # Toutes les entrées résolues et validées AVANT d'écrire quoi que ce soit.
+    v3d_in = projet_json.get("view3d")
+    v3d_resolue = _resoudre_view3d(v3d_in) if v3d_in else None
+    planches_in = projet_json.get("planches", [])
+    if not isinstance(planches_in, list):
+        raise ValueError("planches doit être une liste.")
+    planches_resolues = [_resoudre_planche(i, p) for i, p in enumerate(planches_in)]
+    specs = projet_json.get("specs") or {}
+    _valider_specs(specs)
+
     with util.workdir_temporaire() as wd:
         view3d = None
-        v3d_in = projet_json.get("view3d")
-        if v3d_in:
-            (wd / "cover_3d_full.png").write_bytes(base64.b64decode(v3d_in["image_base64"]))
-            view3d = {
-                "image": "cover_3d_full.png",
-                "image_page_w_pt": v3d_in["image_page_w_pt"],
-                "callouts": v3d_in.get("callouts", []),
-            }
+        if v3d_resolue:
+            image, page_w, callouts = v3d_resolue
+            (wd / "cover_3d_full.png").write_bytes(image)
+            view3d = {"image": "cover_3d_full.png", "image_page_w_pt": page_w, "callouts": callouts}
 
         planches = []
-        for i, p in enumerate(projet_json.get("planches", [])):
+        for i, (image, page_n, page_w, labels) in enumerate(planches_resolues):
             nom_image = f"planche_{i}.png"
-            (wd / nom_image).write_bytes(base64.b64decode(p["image_base64"]))
-            planches.append({
-                "image": nom_image,
-                "page_n": p.get("page_n"),
-                "page_w_pt": p.get("page_w_pt"),
-                "labels": p.get("labels", []),
-            })
+            (wd / nom_image).write_bytes(image)
+            planches.append({"image": nom_image, "page_n": page_n, "page_w_pt": page_w, "labels": labels})
 
         nom_fichier = f"Plan de validation {numero}-{meta['indice']}.pptx"
         out_path = wd / nom_fichier
 
         proj = {
             "base": base, "out": out_path, "workdir": wd, "meta": meta,
-            "specs": projet_json.get("specs") or {},
+            "specs": specs,
             "view3d": view3d, "planches": planches,
         }
         assemble.assembler(proj)
 
         nb_slides = len(Presentation(str(out_path)).slides)
+        pptx_id = cache_disque.PPTX.mettre_en_cache(out_path.read_bytes())
         publication = fichiers.publier(
             out_path, nom_fichier,
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         )
 
         return {
+            "pptx_id": pptx_id,
             "pptx_url": publication["url"],
             "pptx_sha256": publication["sha256"],
             "nom_fichier": nom_fichier,
@@ -117,3 +133,109 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
                 "hors_glossaire": projet_json.get("hors_glossaire", []),
             },
         }
+
+
+def _nombre(valeur) -> bool:
+    return isinstance(valeur, Real) and not isinstance(valeur, bool)
+
+
+def _valider_overlays(liste, champ: str) -> None:
+    """Labels (planche) ou callouts (vue 3D) : chaque élément doit avoir au
+    moins `text` (str) et `bbox` ([x0, y0, x1, y1]), lus par core/assemble."""
+    if not isinstance(liste, list):
+        raise ValueError(f"{champ} doit être une liste.")
+    for j, el in enumerate(liste):
+        if not isinstance(el, dict):
+            raise ValueError(f"{champ}[{j}] doit être un objet.")
+        if not isinstance(el.get("text"), str):
+            raise ValueError(f"{champ}[{j}].text manquant ou non textuel.")
+        bbox = el.get("bbox")
+        if not (isinstance(bbox, (list, tuple)) and len(bbox) == 4 and all(_nombre(v) for v in bbox)):
+            raise ValueError(f"{champ}[{j}].bbox doit être [x0, y0, x1, y1] (nombres), reçu : {bbox!r}.")
+
+
+def _valider_specs(specs) -> None:
+    if not isinstance(specs, dict):
+        raise ValueError('specs doit être un objet {"table": [...]}.')
+    table = specs.get("table", [])
+    if not isinstance(table, list):
+        raise ValueError("specs.table doit être une liste de [libellé, valeur].")
+    for j, ligne in enumerate(table):
+        if not (isinstance(ligne, list) and len(ligne) == 2):
+            raise ValueError(f"specs.table[{j}] doit être [libellé, valeur], reçu : {ligne!r}.")
+
+
+def _exactement_un(entree: dict, champ: str) -> None:
+    if bool(entree.get("extraction_id")) == bool(entree.get("image_base64")):
+        raise ValueError(
+            f"{champ} : fournir exactement un de extraction_id (chemin normal, retourné par "
+            "extraire_page) ou image_base64 (repli) — pas les deux, pas aucun."
+        )
+
+
+def _extraction(extraction_id, champ: str) -> dict:
+    if not isinstance(extraction_id, str):
+        raise ValueError(f"{champ}.extraction_id doit être une chaîne.")
+    donnees = extraction_cache.recuperer(extraction_id)
+    if donnees is None:
+        raise ValueError(f"{champ}.extraction_id {extraction_id!r} inconnu ou expiré — relancez extraire_page.")
+    return donnees
+
+
+def _resoudre_planche(i: int, p) -> tuple[bytes, Any, float, list]:
+    """(image, page_n, page_w_pt, labels) pour `planches[i]`."""
+    champ = f"planches[{i}]"
+    if not isinstance(p, dict):
+        raise ValueError(f"{champ} doit être un objet.")
+    _exactement_un(p, champ)
+    if p.get("extraction_id"):
+        eid = p["extraction_id"]
+        donnees = _extraction(eid, champ)
+        image = extraction_cache.recuperer_image(eid, "planche")
+        if image is None:
+            raise ValueError(
+                f"{champ}.extraction_id : cette extraction n'a pas d'image de planche "
+                "(page extraite avec role='garde' ou 'specs' ?) — utilisez l'extraction_id "
+                "d'un extraire_page(role='planche')."
+            )
+        page_n, page_w = donnees["page_num"], donnees["page_size_pts"][0]
+        labels = p.get("labels")
+        if labels is None:
+            labels = extraction_cache.recuperer_labels(eid)
+            if labels is None:
+                raise ValueError(
+                    f"{champ} : aucun label traduit pour cette extraction — appelez d'abord "
+                    "traduire_mots(extraction_id=..., role='planche') sur cette page."
+                )
+    else:
+        image = util.decoder_base64(p["image_base64"], f"{champ}.image_base64")
+        page_n, page_w, labels = p.get("page_n"), p.get("page_w_pt"), p.get("labels", [])
+        if page_w is not None and not _nombre(page_w):
+            raise ValueError(f"{champ}.page_w_pt doit être un nombre (points PDF), reçu : {page_w!r}.")
+    _valider_overlays(labels, f"{champ}.labels")
+    return image, page_n, page_w, labels
+
+
+def _resoudre_view3d(v) -> tuple[bytes, float, list]:
+    """(image, image_page_w_pt, callouts) pour `view3d`."""
+    if not isinstance(v, dict):
+        raise ValueError("view3d doit être un objet ou null.")
+    _exactement_un(v, "view3d")
+    if v.get("extraction_id"):
+        eid = v["extraction_id"]
+        donnees = _extraction(eid, "view3d")
+        image = extraction_cache.recuperer_image(eid, "vue_3d")
+        if image is None:
+            raise ValueError(
+                "view3d.extraction_id : aucune vue 3D pour cette extraction (page extraite sans "
+                f"role='garde', ou vue_3d_erreur : {donnees.get('vue_3d_erreur')!r})."
+            )
+        page_w = donnees["vue_3d_page_w_pt"]
+    else:
+        image = util.decoder_base64(v["image_base64"], "view3d.image_base64")
+        page_w = v.get("image_page_w_pt")
+        if not _nombre(page_w):
+            raise ValueError(f"view3d.image_page_w_pt doit être un nombre (points PDF), reçu : {page_w!r}.")
+    callouts = v.get("callouts", [])
+    _valider_overlays(callouts, "view3d.callouts")
+    return image, page_w, callouts

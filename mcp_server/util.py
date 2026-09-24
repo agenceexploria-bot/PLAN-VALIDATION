@@ -14,12 +14,13 @@ mcp_server/pdf_cache.py, mcp_server/extraction_cache.py) : les fonctions
 `resoudre_*` de ce module sont le point d'entrée commun qui l'assume.
 """
 import base64
+import binascii
 import shutil
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import extraction_cache, pdf_cache
+from . import cache_disque, extraction_cache, pdf_cache
 
 # Même limite que app.py::LIMITE_PDF_MO (app Streamlit) — un PDF fabricant
 # plus gros risque de saturer la mémoire du conteneur avant même l'extraction.
@@ -151,6 +152,32 @@ def resoudre_entree_words_par_page(valeur) -> dict:
         )
     valider_words_data(resolu)
     return resolu
+
+
+def decoder_base64(valeur, champ: str) -> bytes:
+    """Décode `valeur` (base64) en nommant `champ` dans l'erreur si ce
+    n'est pas du base64 valide — jamais un binascii.Error opaque."""
+    if not isinstance(valeur, str) or not valeur:
+        raise ValueError(f"{champ} doit être une chaîne base64 non vide.")
+    try:
+        return base64.b64decode(valeur, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError(f"{champ} : base64 invalide.") from None
+
+
+def resoudre_pptx(pptx_base64: str | None, pptx_id: str | None) -> bytes:
+    """Résout le PPTX d'entrée de `verifier_rendu` / `exporter_pdf` : soit
+    `pptx_id` (chemin NORMAL, retourné par `assembler_pptx`, PPTX gardé sur
+    le serveur — cf. mcp_server/cache_disque.py), soit `pptx_base64` en
+    repli (petits fichiers, tests directs). Exactement un des deux."""
+    if bool(pptx_base64) == bool(pptx_id):
+        raise ValueError("fournir exactement un de pptx_id ou pptx_base64 (pas les deux, pas aucun).")
+    if pptx_id:
+        contenu = cache_disque.PPTX.recuperer(pptx_id)
+        if contenu is None:
+            raise ValueError(f"pptx_id {pptx_id!r} inconnu ou expiré — relancez assembler_pptx.")
+        return contenu
+    return decoder_base64(pptx_base64, "pptx_base64")
 
 
 def encoder_fichier(chemin: Path) -> str:

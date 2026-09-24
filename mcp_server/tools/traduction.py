@@ -4,7 +4,7 @@ from typing import Any
 
 from core import translate
 
-from .. import util
+from .. import extraction_cache, util
 
 
 def traduire_mots(
@@ -37,8 +37,10 @@ def traduire_mots(
     d'inventer une traduction.
 
     Retourne, selon `role` :
-      - "planche" : `labels` (étiquettes FR à superposer, prêtes pour
-        `assembler_pptx.planches[].labels`), `page_w_pt`, `hors_glossaire` ;
+      - "planche" : `labels` (étiquettes FR à superposer), `page_w_pt`,
+        `hors_glossaire`. Avec `extraction_id`, ces labels sont AUSSI
+        rattachés côté serveur à l'extraction : `assembler_pptx` les reprend
+        seul (`planches[].extraction_id`), inutile de les retransmettre ;
       - "specs" : `table` (liste [libellé_fr, valeur]) avec les rubriques
         commerciales absentes du plan fabricant automatiquement ajoutées et
         marquées "à confirmer (service commercial)"
@@ -60,6 +62,8 @@ def traduire_mots(
 
     if role == "planche":
         labels, hors_glossaire = translate.traduire_labels_planche(words_data)
+        if extraction_id:
+            extraction_cache.enregistrer_labels(extraction_id, labels)
         return {
             "labels": labels,
             "page_w_pt": words_data["page_size_pts"][0],

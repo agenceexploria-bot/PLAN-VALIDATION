@@ -26,11 +26,13 @@ les dégâts à « peut téléverser des PDF », jamais à « peut appeler
 exporter_pdf ». `MCP_AUTH_TOKEN`, lui, n'apparaît jamais dans un texte
 destiné à être collé où que ce soit.
 """
+import functools
 import os
 from urllib.parse import urlparse
 
 import uvicorn
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -55,35 +57,55 @@ _INSTRUCTIONS = (
     "(jeton DISTINCT de celui des appels d'outils, portée réduite à "
     "l'upload), qui retourne {pdf_id, expire_dans_s} ; réutilisez ce pdf_id tel quel pour "
     "inventaire_pdf PUIS chaque extraire_page, jamais de base64 manuel ; "
-    "(5) la réponse d'extraire_page (words) ne se recopie PAS non plus à la "
-    "main dans les appels suivants : elle inclut extraction_id, à réutiliser "
-    "tel quel dans traduire_mots puis dans words_par_page de verifier_rendu "
-    "(un JSON de mots reconstruit à la main a déjà fait échouer un pipeline "
-    "réel). "
+    "(5) aucune sortie d'outil ne se recopie à la main dans les appels "
+    "suivants — ni mots (words), ni images, ni PPTX : chaque outil renvoie un "
+    "identifiant à réutiliser tel quel (extraction_id, pptx_id). Ne "
+    "téléchargez JAMAIS une image ou un PPTX pour le ré-encoder en base64 "
+    "(une planche A3 à 300 dpi ≈ 165k jetons : un pipeline réel a déjà "
+    "échoué ainsi) ; les URLs de téléchargement servent seulement à montrer "
+    "un fichier à l'utilisateur. "
     "Ordre d'appel attendu : POST /pdfs (obtenir pdf_id) -> "
     "inventaire_pdf(pdf_id=...) (classer les pages) -> "
     "extraire_page(pdf_id=...) pour chaque page retenue (role="
     "'garde'|'planche'|'specs', obtenir extraction_id) -> "
     "traduire_mots(extraction_id=...) sur les pages 'planche' et 'specs' "
-    "-> assembler_pptx "
-    "-> verifier_rendu(words_par_page={page: extraction_id, ...}) (montrer "
-    "les images produites à l'utilisateur et obtenir son accord explicite) "
-    "-> exporter_pdf (valide=True seulement "
+    "-> assembler_pptx(planches=[{extraction_id}, ...], view3d={extraction_id}) "
+    "(obtenir pptx_id) "
+    "-> verifier_rendu(pptx_id=..., words_par_page={page: extraction_id, ...}) "
+    "(montrer les images produites à l'utilisateur et obtenir son accord "
+    "explicite) -> exporter_pdf(pptx_id=..., valide=True seulement "
     "après cet accord)."
 )
 
 server = MCPServer(name="plan-validation-vertical", instructions=_INSTRUCTIONS)
 
+def _erreurs_explicites(outil):
+    """Le SDK mcp (2.x) ne transmet au client QUE le texte d'une `ToolError` :
+    toute autre exception arrive réduite à « Error executing tool <nom> »,
+    sans le message (constaté en conditions réelles : assembler_pptx et
+    traduire_mots échouaient « sans message exploitable » côté Dust, alors
+    que nos ValueError nommaient bien le champ en cause). Nos outils lèvent
+    ValueError pour toute entrée refusée — convertie ici en ToolError pour
+    que l'agent lise la cause. Les autres exceptions (vrais plantages)
+    restent masquées côté client, comme le veut le SDK."""
+    @functools.wraps(outil)
+    def enveloppe(*args, **kwargs):
+        try:
+            return outil(*args, **kwargs)
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+    return enveloppe
+
+
 # Chaque outil est une fonction Python ordinaire, testable directement sans
 # passer par le protocole MCP (cf. tests/mcp/test_tools_local.py) ; enregistrée
 # ici explicitement plutôt que par décorateur, pour ne pas dépendre d'un ordre
 # d'import fragile entre server.py et tools/*.py.
-server.add_tool(inventaire.inventaire_pdf)
-server.add_tool(extraction.extraire_page)
-server.add_tool(traduction.traduire_mots)
-server.add_tool(assemblage.assembler_pptx)
-server.add_tool(verification.verifier_rendu)
-server.add_tool(export.exporter_pdf)
+for _outil in (
+    inventaire.inventaire_pdf, extraction.extraire_page, traduction.traduire_mots,
+    assemblage.assembler_pptx, verification.verifier_rendu, export.exporter_pdf,
+):
+    server.add_tool(_erreurs_explicites(_outil))
 
 
 @server.custom_route(f"{fichiers.PREFIXE_ROUTE}/{{jeton}}", methods=["GET"])

@@ -28,19 +28,18 @@ def extraire_page(
     (cache 30 min glissantes), relancez `inventaire_pdf`. La réponse renvoie
     `pdf_id` dans tous les cas, à réutiliser pour la page suivante.
 
-    L'image (et la vue 3D le cas échéant) est une URL de téléchargement à
-    usage unique (5 min de durée de vie), pas du contenu inline : à 300 dpi
-    une planche dépasse largement la limite de 1 Mio par réponse d'outil du
-    protocole MCP. Récupérez-la par un GET simple, puis ré-encodez-la en
-    base64 pour la fournir à `assembler_pptx` (`planches[].image_base64` /
-    `view3d.image_base64`).
+    La réponse est mise en cache dans son intégralité côté serveur, images
+    comprises, et identifiée par `extraction_id` (30 min glissantes) : passez
+    CET identifiant, et rien d'autre, à `traduire_mots`, à `assembler_pptx`
+    (`planches[].extraction_id`, `view3d.extraction_id` — le serveur y
+    retrouve lui-même l'image en pleine résolution) puis à `verifier_rendu`
+    (`words_par_page`). NE TÉLÉCHARGEZ PAS l'image pour la ré-encoder en
+    base64, NE RECONSTRUISEZ JAMAIS `words` à la main : un agent Dust réel a
+    échoué sur les deux (une planche A3 à 300 dpi en base64 ≈ 165k jetons).
 
-    La réponse est aussi mise en cache dans son intégralité côté serveur et
-    identifiée par `extraction_id` (30 min glissantes) : passez CET
-    identifiant, pas le JSON complet, à `traduire_mots` puis à
-    `verifier_rendu` (`words_par_page`). NE RECONSTRUISEZ JAMAIS `words`
-    à la main pour ces appels suivants — un agent Dust réel a buté sur la
-    taille de ce JSON en tentant de le retransmettre tel quel.
+    `image_url` (et `vue_3d_url` le cas échéant) : URL de téléchargement à
+    usage unique (5 min), uniquement pour MONTRER l'image à l'utilisateur —
+    jamais nécessaire au pipeline.
 
     `role` adapte le traitement à la nature réelle de la page (comme le fait
     le pipeline de référence, core/extract.py + core/cover.py) :
@@ -91,8 +90,11 @@ def extraire_page(
         if "redaction_pil_fallback" in words_data:
             reponse["redaction_pil_fallback"] = words_data["redaction_pil_fallback"]
 
+        images = {}
         image_path = wd / f"page_{page_num}_redacted.png"
         if image_path.exists():
+            if role == "planche":
+                images["planche"] = image_path.read_bytes()
             publication = fichiers.publier(image_path, image_path.name, "image/png")
             reponse["image_url"] = publication["url"]
             reponse["image_sha256"] = publication["sha256"]
@@ -101,6 +103,7 @@ def extraire_page(
                 try:
                     crop_path = wd / "cover_3d_full.png"
                     info = cover.extraire_vue_3d(image_path, crop_path, words_data=words_data, dpi=dpi)
+                    images["vue_3d"] = crop_path.read_bytes()
                     publication_3d = fichiers.publier(crop_path, crop_path.name, "image/png")
                     reponse["vue_3d_url"] = publication_3d["url"]
                     reponse["vue_3d_sha256"] = publication_3d["sha256"]
@@ -110,7 +113,7 @@ def extraire_page(
                     # la page specs, signalée plutôt qu'un échec brutal de l'outil.
                     reponse["vue_3d_erreur"] = str(e)
 
-        cache = extraction_cache.mettre_en_cache(reponse)
+        cache = extraction_cache.mettre_en_cache(reponse, images)
         reponse["extraction_id"] = cache["extraction_id"]
         reponse["extraction_id_expire_dans_s"] = cache["expire_dans_s"]
         return reponse

@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """mcp_server/tools/export.py — outil MCP `exporter_pdf` (étape 6, dernière
 étape, jamais automatique)."""
-import base64
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -11,7 +10,10 @@ from core import render
 from .. import fichiers, util
 
 
-def exporter_pdf(pptx_base64: str, valide: bool, pptx_sha256_verifie: str = None, moteur: str = None) -> dict[str, Any]:
+def exporter_pdf(
+    pptx_base64: str = None, *, valide: bool, pptx_sha256_verifie: str = None, moteur: str = None,
+    pptx_id: str = None,
+) -> dict[str, Any]:
     """Export PDF final — UNIQUEMENT après validation explicite de
     l'utilisateur du rendu visuel produit par `verifier_rendu` (règle
     absolue n°3 : jamais d'export automatique ou silencieux).
@@ -22,9 +24,12 @@ def exporter_pdf(pptx_base64: str, valide: bool, pptx_sha256_verifie: str = None
     l'utilisateur n'a pas encore répondu) : l'appel ÉCHOUE explicitement, il
     ne renvoie jamais un PDF par défaut.
 
+    Fournissez EXACTEMENT UN des deux : `pptx_id` (chemin NORMAL, le même
+    que celui passé à `verifier_rendu`) ou `pptx_base64` (repli).
+
     `pptx_sha256_verifie` (fortement recommandé) : l'empreinte `pptx_sha256`
     renvoyée par `verifier_rendu`. Si fournie, DOIT correspondre à
-    l'empreinte du `pptx_base64` de CET appel — sinon l'export est refusé :
+    l'empreinte du PPTX de CET appel — sinon l'export est refusé :
     sans ce lien, rien n'empêche d'exporter un PPTX différent de celui que
     l'utilisateur a vu et validé (pas d'état côté serveur pour le vérifier
     autrement).
@@ -48,7 +53,7 @@ def exporter_pdf(pptx_base64: str, valide: bool, pptx_sha256_verifie: str = None
             "avant d'appeler exporter_pdf."
         )
 
-    contenu = base64.b64decode(pptx_base64, validate=True)
+    contenu = util.resoudre_pptx(pptx_base64, pptx_id)
     if pptx_sha256_verifie:
         empreinte = hashlib.sha256(contenu).hexdigest()
         if empreinte != pptx_sha256_verifie:

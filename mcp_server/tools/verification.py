@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """mcp_server/tools/verification.py — outil MCP `verifier_rendu` (étape 5,
 portail obligatoire avant tout export PDF)."""
-import base64
 import hashlib
 from typing import Any
 
@@ -10,11 +9,19 @@ from core import render, verify
 from .. import fichiers, util
 
 
-def verifier_rendu(pptx_base64: str, words_par_page: dict = None, meta: dict = None) -> dict[str, Any]:
+def verifier_rendu(
+    pptx_base64: str = None, words_par_page: dict = None, meta: dict = None, pptx_id: str = None,
+) -> dict[str, Any]:
     """Convertit le PPTX en image par slide (LibreOffice headless — jamais
     PowerPoint/COM, pour rester portable sur ce serveur) : les images
     DOIVENT être montrées à l'utilisateur AVANT toute validation (règle
     absolue n°3). Calcule aussi le rapport de vérification programmatique.
+
+    Fournissez EXACTEMENT UN des deux : `pptx_id` (chemin NORMAL, retourné
+    par `assembler_pptx` — le PPTX reste sur le serveur) ou `pptx_base64`
+    (repli, petits fichiers / tests directs). Ne téléchargez jamais le PPTX
+    pour le ré-encoder en base64 : plusieurs Mo, bien au-delà du budget d'un
+    agent.
 
     `words_par_page` (optionnel) : {"<page_num>": extraction_id | words_data,
     ...}, agrégé par l'appelant depuis les réponses de `extraire_page` sur
@@ -55,7 +62,7 @@ def verifier_rendu(pptx_base64: str, words_par_page: dict = None, meta: dict = N
     if words_par_page:
         wpp = {int(n): util.resoudre_entree_words_par_page(v) for n, v in words_par_page.items()}
 
-    contenu = base64.b64decode(pptx_base64, validate=True)
+    contenu = util.resoudre_pptx(pptx_base64, pptx_id)
     pptx_sha256 = hashlib.sha256(contenu).hexdigest()
 
     with util.workdir_temporaire() as wd:

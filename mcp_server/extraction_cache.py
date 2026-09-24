@@ -26,10 +26,19 @@ LIMITE_PDF_MO) — l'aller-retour disque n'apporte rien ici. Conséquence :
 rien à purger au démarrage (aucun fichier laissé sur disque par une
 instance précédente, contrairement à pdf_cache/fichiers) ; un redémarrage
 du process vide simplement le registre.
+
+Une entrée porte aussi, pour `assembler_pptx` (qui reçoit une planche ou la
+vue 3D par `extraction_id`, jamais en base64 — cf. mcp_server/cache_disque.py) :
+les images de la page (identifiants dans `cache_disque.IMAGES`, les octets
+restent SUR DISQUE) et les labels produits par `traduire_mots` sur cette
+page. Lire l'entrée prolonge aussi ses images : elles vivent aussi
+longtemps que l'extraction qui les référence.
 """
 import secrets
 import threading
 import time
+
+from . import cache_disque
 
 DUREE_VIE_SECONDES = 30 * 60
 
@@ -47,15 +56,34 @@ def _purger_expires() -> None:
         _REGISTRE.pop(extraction_id, None)
 
 
-def mettre_en_cache(words_data: dict) -> dict:
+def mettre_en_cache(words_data: dict, images: dict[str, bytes] | None = None) -> dict:
     """Garde `words_data` en mémoire sous un identifiant imprévisible et
     retourne {"extraction_id", "expire_dans_s"}. Appelé par `extraire_page`
-    pour chaque page extraite."""
+    pour chaque page extraite. `images` ({"planche"|"vue_3d": octets PNG})
+    est écrit dans `cache_disque.IMAGES`, rattaché à cette extraction."""
+    ids_images = {nom: cache_disque.IMAGES.mettre_en_cache(contenu) for nom, contenu in (images or {}).items()}
     with _VERROU:
         _purger_expires()
         extraction_id = secrets.token_urlsafe(32)
-        _REGISTRE[extraction_id] = {"donnees": words_data, "expire_a": time.monotonic() + DUREE_VIE_SECONDES}
+        _REGISTRE[extraction_id] = {
+            "donnees": words_data, "images": ids_images, "labels": None,
+            "expire_a": time.monotonic() + DUREE_VIE_SECONDES,
+        }
     return {"extraction_id": extraction_id, "expire_dans_s": DUREE_VIE_SECONDES}
+
+
+def _entree(extraction_id: str) -> dict | None:
+    """Entrée vivante pour `extraction_id` (expiration prolongée, images
+    comprises), ou None si inconnue/expirée."""
+    with _VERROU:
+        _purger_expires()
+        info = _REGISTRE.get(extraction_id)
+        if info is None:
+            return None
+        info["expire_a"] = time.monotonic() + DUREE_VIE_SECONDES
+    for ident in info["images"].values():
+        cache_disque.IMAGES.prolonger(ident)
+    return info
 
 
 def recuperer(extraction_id: str) -> dict | None:
@@ -63,10 +91,30 @@ def recuperer(extraction_id: str) -> dict | None:
     RÉUTILISABLE (pas d'usage unique) et PROLONGE la durée de vie de
     l'entrée à chaque appel (expiration glissante), même principe que
     `mcp_server/pdf_cache.py`."""
-    with _VERROU:
-        _purger_expires()
-        info = _REGISTRE.get(extraction_id)
-        if info is None:
-            return None
-        info["expire_a"] = time.monotonic() + DUREE_VIE_SECONDES
-        return info["donnees"]
+    info = _entree(extraction_id)
+    return None if info is None else info["donnees"]
+
+
+def recuperer_image(extraction_id: str, nom: str) -> bytes | None:
+    """Octets PNG de l'image `nom` ("planche"|"vue_3d") de cette extraction,
+    ou None si l'extraction est inconnue/expirée ou n'a pas produit cette
+    image."""
+    info = _entree(extraction_id)
+    if info is None or nom not in info["images"]:
+        return None
+    return cache_disque.IMAGES.recuperer(info["images"][nom])
+
+
+def enregistrer_labels(extraction_id: str, labels: list) -> None:
+    """Rattache à l'extraction les labels produits par `traduire_mots`, pour
+    qu'`assembler_pptx` les reprenne sans que l'agent les retransmette."""
+    info = _entree(extraction_id)
+    if info is not None:
+        info["labels"] = labels
+
+
+def recuperer_labels(extraction_id: str) -> list | None:
+    """Labels enregistrés par `traduire_mots` pour cette extraction, ou None
+    si `traduire_mots` n'a pas (encore) été appelé dessus."""
+    info = _entree(extraction_id)
+    return None if info is None else info["labels"]
