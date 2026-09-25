@@ -31,15 +31,15 @@ même code `core/`, jamais le même déploiement.
 Chaque outil a une description détaillée dans son propre docstring
 (`mcp_server/tools/*.py`) — c'est ce que l'agent Dust lit pour savoir quand
 et comment l'utiliser. Ordre d'appel attendu : `inventaire_pdf` →
-`extraire_page` (par page retenue, obtenir `extraction_id` — role `garde`
-pour la page de la vue 3D, même si elle porte aussi le tableau specs : seul
-ce rôle produit l'image de la vue 3D) →
-`traduire_mots(extraction_id=...)` (role `planche` sur les planches,
-`specs` sur la page specs) →
-`assembler_pptx(planches=[{extraction_id}, ...], view3d={extraction_id},
-specs={extraction_id})` (même `extraction_id` pour `view3d` et `specs` quand
-ils sont sur la même page ; sans `view3d`, page specs sans vue 3D) (obtenir
-`pptx_id`) → `verifier_rendu(pptx_id=..., words_par_page={page:
+`extraire_page` (UNE fois par page retenue, obtenir `extraction_id` —
+roles `garde` et `specs` identiques à l'extraction : image + vue 3D
+recadrée) → `traduire_mots(extraction_id=...)` (role `planche` sur les
+planches, `specs` sur la page specs) →
+`assembler_pptx(planches=[{extraction_id}, ...], specs={extraction_id})`
+(la vue 3D de la page specs est reprise automatiquement quand `view3d` est
+absent, et signalée dans `a_signaler_a_l_utilisateur`, à relayer avant
+`verifier_rendu` ; `view3d={extraction_id}` seulement pour une vue 3D sur
+une autre page) (obtenir `pptx_id`) → `verifier_rendu(pptx_id=..., words_par_page={page:
 extraction_id, ...})` (TOUTES les pages extraites, page specs comprise) (montrer les images à l'utilisateur, obtenir son
 accord) → `exporter_pdf(pptx_id=..., valide=True)`.
 
@@ -182,7 +182,7 @@ Mécanisme (`mcp_server/cache_disque.py`) : même principe que `pdf_cache`
 — SUR DISQUE (quelques Mo par image/PPTX, palier Render à 512 Mo),
 identifiant imprévisible, réutilisable, 30 min glissantes, purge des
 dossiers orphelins au démarrage. `extraire_page` y range l'image de la
-planche (`role="planche"`) et la vue 3D (`role="garde"`), rattachées à
+planche (`role="planche"`) et la vue 3D (`role="garde"` ou `"specs"`), rattachées à
 l'`extraction_id` ; `traduire_mots(extraction_id=...)` y rattache ses
 labels ; lire l'extraction prolonge aussi ses images.
 `assembler_pptx` range le PPTX produit et retourne `pptx_id`.

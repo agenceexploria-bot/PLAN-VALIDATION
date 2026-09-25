@@ -328,10 +328,54 @@ def test_assembler_pptx_vue_3d_et_specs_meme_page(pdf_id, planche_300dpi, capsys
         "planches": [{"extraction_id": eid}],
     })
     log = capsys.readouterr().out
-    assert "[assembler_pptx] view3d=extraction_id specs=extraction_id planches=1 [extraction_id]" in log
+    assert "[assembler_pptx] view3d=extraction_id specs=extraction_id(vue_3d=oui) planches=1 [extraction_id]" in log
     assert eid1 not in log and eid not in log
     prs = Presentation(io.BytesIO(util.resoudre_pptx(None, resultat["pptx_id"])))
     assert any(sh.shape_type == 13 for sh in prs.slides[1].shapes)  # PICTURE
+
+
+@pytest.mark.parametrize("role", ["garde", "specs"])
+def test_assembler_pptx_vue_3d_deduite_de_specs(pdf_id, planche_300dpi, role, capsys):
+    """3e test Dust réel : view3d=ABSENT malgré les instructions. Page 1
+    (vue 3D + tableau specs) extraite UNE seule fois, quel que soit le rôle
+    choisi, et passée seulement en specs : la vue 3D en est déduite, posée
+    sur la page specs, et SIGNALÉE à l'agent pour qu'il prévienne
+    l'utilisateur avant verifier_rendu."""
+    from mcp_server import util
+    from pptx import Presentation
+    import io
+
+    page1 = extraction.extraire_page(pdf_id=pdf_id, page_num=1, dpi=150, role=role)
+    assert "vue_3d_url" in page1
+    eid1 = page1["extraction_id"]
+    traduction.traduire_mots(extraction_id=eid1, role="specs")
+    eid = planche_300dpi["extraction_id"]
+    traduction.traduire_mots(extraction_id=eid, role="planche")
+    capsys.readouterr()
+    resultat = assemblage.assembler_pptx({
+        "meta": META_VALIDE, "specs": {"extraction_id": eid1}, "planches": [{"extraction_id": eid}],
+    })
+    assert resultat["resume"]["vue_3d_deduite"] is True
+    assert any("déduite automatiquement" in m and "vérifier visuellement" in m
+               for m in resultat["a_signaler_a_l_utilisateur"])
+    assert "specs=extraction_id(vue_3d=oui)" in capsys.readouterr().out
+    prs = Presentation(io.BytesIO(util.resoudre_pptx(None, resultat["pptx_id"])))
+    assert any(sh.shape_type == 13 for sh in prs.slides[1].shapes)  # PICTURE
+
+
+def test_assembler_pptx_view3d_explicite_prioritaire(pdf_id, planche_300dpi):
+    """view3d fourni explicitement : rien n'est déduit, aucun avertissement."""
+    garde = extraction.extraire_page(pdf_id=pdf_id, page_num=1, dpi=150, role="garde")
+    specs = extraction.extraire_page(pdf_id=pdf_id, page_num=1, dpi=150, role="specs")
+    traduction.traduire_mots(extraction_id=specs["extraction_id"], role="specs")
+    eid = planche_300dpi["extraction_id"]
+    traduction.traduire_mots(extraction_id=eid, role="planche")
+    resultat = assemblage.assembler_pptx({
+        "meta": META_VALIDE, "view3d": {"extraction_id": garde["extraction_id"]},
+        "specs": {"extraction_id": specs["extraction_id"]}, "planches": [{"extraction_id": eid}],
+    })
+    assert resultat["resume"]["vue_3d_deduite"] is False
+    assert resultat["a_signaler_a_l_utilisateur"] == []
 
 
 def test_assembler_pptx_journalise_view3d_absent(capsys):

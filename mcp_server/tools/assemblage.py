@@ -34,9 +34,9 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
                "indice": "R00", "date": "JJ/MM/AAAA" (optionnel, aujourd'hui
                par défaut), "type_equipement": "non accompagné"|"accompagné"},
       "view3d": {"extraction_id": str, "callouts": [...] (optionnel)} | null,
-                 # extraction_id de la page extraite avec role="garde" —
-                 # absent/null : la page specs sort SANS vue 3D. Vue 3D et
-                 # tableau specs sur la même page : même extraction_id que specs
+                 # OPTIONNEL : absent/null, la vue 3D est reprise de
+                 # l'extraction de `specs` (page vue 3D + specs extraite une
+                 # seule fois) — signalé dans `a_signaler_a_l_utilisateur`
       "specs": {"extraction_id": str},
                  # OBLIGATOIRE : extraction_id de la page specs, APRÈS
                  # traduire_mots(extraction_id=..., role="specs") — ou, en
@@ -62,7 +62,10 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
     sinon plutôt que de générer un cartouche avec une valeur inventée.
 
     Retourne {"pptx_id": str, "pptx_url": str, "pptx_sha256": str,
-    "nom_fichier": str, "resume": {...}} — passez `pptx_id` tel quel à
+    "nom_fichier": str, "resume": {...}, "a_signaler_a_l_utilisateur": [str]}.
+    `a_signaler_a_l_utilisateur` : messages à RECOPIER TELS QUELS à
+    l'utilisateur AVANT d'appeler `verifier_rendu` (ex. vue 3D déduite
+    automatiquement de la page specs, à vérifier visuellement). Passez `pptx_id` tel quel à
     `verifier_rendu` puis `exporter_pdf` (PPTX gardé sur le serveur, 30 min
     glissantes). `pptx_url` (usage unique, 5 min) sert seulement à donner le
     PPTX à l'utilisateur s'il le demande.
@@ -97,6 +100,12 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
         raise ValueError("planches doit être une liste.")
     planches_resolues = [_resoudre_planche(i, p) for i, p in enumerate(planches_in)]
     specs = _resoudre_specs(projet_json.get("specs"))
+    vue_3d_deduite = False
+    if v3d_resolue is None and projet_json["specs"].get("extraction_id"):
+        v3d_resolue = _vue_3d_de_specs(projet_json["specs"]["extraction_id"])
+        vue_3d_deduite = v3d_resolue is not None
+        if vue_3d_deduite:
+            print("[assembler_pptx] view3d deduite_de_specs", flush=True)
 
     with util.workdir_temporaire() as wd:
         view3d = None
@@ -137,7 +146,9 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
                 "nb_slides": nb_slides,
                 "nb_planches": len(planches),
                 "hors_glossaire": projet_json.get("hors_glossaire", []),
+                "vue_3d_deduite": vue_3d_deduite,
             },
+            "a_signaler_a_l_utilisateur": [AVERTISSEMENT_VUE_3D_DEDUITE] if vue_3d_deduite else [],
         }
 
 
@@ -168,10 +179,16 @@ def _journaliser_entrees(projet_json: dict) -> None:
         f"{_source(p)}{'+labels' if isinstance(p, dict) and p.get('labels') is not None else ''}"
         for p in planches_in
     )
+    specs = projet_json.get("specs")
+    vue_3d_specs = ""
+    if isinstance(specs, dict) and isinstance(specs.get("extraction_id"), str):
+        donnees = extraction_cache.recuperer(specs["extraction_id"])
+        if donnees is not None:
+            vue_3d_specs = f"(vue_3d={'oui' if 'vue_3d_page_w_pt' in donnees else 'non'})"
     print(
         f"[assembler_pptx] view3d={_source(v3d)}"
         f"{'+callouts' if isinstance(v3d, dict) and v3d.get('callouts') else ''}"
-        f" specs={_source(projet_json.get('specs'))}"
+        f" specs={_source(specs)}{vue_3d_specs}"
         f" planches={len(planches_in)} [{planches}]"
         f" hors_glossaire={'fourni' if projet_json.get('hors_glossaire') else 'ABSENT'}",
         flush=True,
@@ -287,6 +304,23 @@ def _resoudre_planche(i: int, p) -> tuple[bytes, Any, float, list]:
     return image, page_n, page_w, labels
 
 
+AVERTISSEMENT_VUE_3D_DEDUITE = (
+    "Vue 3D déduite automatiquement de la page specs (view3d non fourni) : "
+    "à vérifier visuellement sur la page specs — si la page source ne porte "
+    "pas de vraie vue 3D, un morceau de cadre ou de tableau peut y avoir été "
+    "posé à la place."
+)
+
+
+def _vue_3d_de_specs(extraction_id: str):
+    """(image, image_page_w_pt, callouts) de la vue 3D recadrée sur la page
+    specs à l'extraction, ou None si elle n'en a pas (vue_3d_erreur)."""
+    image = extraction_cache.recuperer_image(extraction_id, "vue_3d")
+    if image is None:
+        return None
+    return image, extraction_cache.recuperer(extraction_id)["vue_3d_page_w_pt"], []
+
+
 def _resoudre_view3d(v) -> tuple[bytes, float, list]:
     """(image, image_page_w_pt, callouts) pour `view3d`."""
     if not isinstance(v, dict):
@@ -299,7 +333,7 @@ def _resoudre_view3d(v) -> tuple[bytes, float, list]:
         if image is None:
             raise ValueError(
                 "view3d.extraction_id : aucune vue 3D pour cette extraction (page extraite sans "
-                f"role='garde', ou vue_3d_erreur : {donnees.get('vue_3d_erreur')!r})."
+                f"role='garde' ou 'specs', ou vue_3d_erreur : {donnees.get('vue_3d_erreur')!r})."
             )
         page_w = donnees["vue_3d_page_w_pt"]
     else:

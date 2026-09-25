@@ -46,11 +46,13 @@ def extraire_page(
       - "planche" (défaut) : planche dessin cotée — rédaction des libellés
         traduisibles ET des cotes fusionnées à suffixe ; `image_url` pointe
         vers l'image RÉDIGÉE ;
-      - "garde" : page de garde / vue 3D fournisseur — AUCUNE rédaction (rien
-        n'y est traduit en place) ; la vue 3D est en plus recadrée SANS
-        rognage (`vue_3d_url` + `vue_3d_page_w_pt`) ;
-      - "specs" : page qui alimente le tableau specs — aucune image générée
-        (seul le texte est utile), `image_url` absent de la réponse.
+      - "garde" ou "specs" : page de la vue 3D fournisseur et/ou du tableau
+        specs (souvent la même page) — traitement IDENTIQUE : AUCUNE
+        rédaction (rien n'y est traduit en place), vue 3D recadrée SANS
+        rognage (`vue_3d_url` + `vue_3d_page_w_pt`, ou `vue_3d_erreur`). Une
+        seule extraction de cette page suffit, quel que soit le rôle : la même
+        `extraction_id` sert à `traduire_mots(role="specs")` puis à
+        `assembler_pptx(specs=...)`, qui en reprend aussi la vue 3D.
 
     ⚠️ Piège réel (vu sur un plan fabricant, texte dessiné en tracés
     vectoriels plutôt qu'en glyphes de police) : la rédaction PDF peut
@@ -73,11 +75,7 @@ def extraire_page(
         with fitz.open(pdf_path) as doc:
             if not (1 <= page_num <= len(doc)):
                 raise ValueError(f"page_num {page_num} hors limites (1 à {len(doc)}).")
-            words_data = extract.extraire_page(
-                doc, page_num - 1, wd, dpi=dpi,
-                generer_image=(role != "specs"),
-                rediger=(role == "planche"),
-            )
+            words_data = extract.extraire_page(doc, page_num - 1, wd, dpi=dpi, rediger=(role == "planche"))
 
         reponse = {
             "page_num": page_num,
@@ -99,7 +97,9 @@ def extraire_page(
             reponse["image_url"] = publication["url"]
             reponse["image_sha256"] = publication["sha256"]
 
-            if role == "garde":
+            # "specs" aussi : un agent réel extrait la page vue 3D + specs
+            # UNE fois, avec l'un ou l'autre rôle (3e test Dust réel).
+            if role in ("garde", "specs"):
                 try:
                     crop_path = wd / "cover_3d_full.png"
                     info = cover.extraire_vue_3d(image_path, crop_path, words_data=words_data, dpi=dpi)
