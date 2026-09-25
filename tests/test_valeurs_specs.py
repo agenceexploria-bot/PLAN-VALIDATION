@@ -78,3 +78,30 @@ def test_plan_reel_groupe_hydraulique_deporte():
     words = extract.extraire_pdf(FIXTURE_PDF, wd, [1], dpi=72, generer_image=False)[1]
     table, _ = translate.extraire_tableau_specs(words)
     assert ("Groupe hydraulique", "déporté (extérieur)") in table
+
+
+@pytest.mark.skipif(not FIXTURE_PDF.exists(), reason="fixture PDF absente")
+def test_plan_reel_libelle_coupe_sur_trois_lignes_fusionne():
+    """2e test Dust réel : « TOP PLATFORM : / ANTI SLIP TEAR / METAL » (3 lignes,
+    2 blocs) sortait en deux lignes absurdes « TOP -> plate-forme : » et
+    « ANTI -> SLIP TEAR ». Expression complète du lexique validé -> UNE ligne,
+    traduction validée telle quelle en libellé, valeur vide (choix utilisateur)."""
+    wd = Path(tempfile.mkdtemp())
+    words = extract.extraire_pdf(FIXTURE_PDF, wd, [1], dpi=72, generer_image=False)[1]
+    table, _ = translate.extraire_tableau_specs(words)
+    assert ("Plateforme en tôle larmée antidérapante", "") in table
+    libelles = [lab for lab, _ in table]
+    assert "TOP" not in libelles and "ANTI" not in libelles
+    assert not any("SLIP" in val or "METAL" in val for _, val in table)
+    # Les voisines ne sont pas absorbées par la fusion.
+    assert ("Vitesse", "0,15 M/SN") in table
+    assert ("Groupe hydraulique", "déporté (extérieur)") in table
+
+
+def test_libelle_coupe_non_reconnu_par_le_lexique_reste_inchange():
+    """La fusion n'a lieu QUE si l'expression complète est dans le lexique
+    validé : rien n'est deviné."""
+    words = {"words": _mots("TOP FOO :", x=853, y=667, block=10, line=0)
+                      + _mots("BAR BAZ", x=1028, y=659, block=10, line=1)}
+    table, _ = translate.extraire_tableau_specs(words)
+    assert not any(val == "" for _, val in table)

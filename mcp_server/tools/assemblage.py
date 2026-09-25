@@ -34,7 +34,9 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
                "indice": "R00", "date": "JJ/MM/AAAA" (optionnel, aujourd'hui
                par défaut), "type_equipement": "non accompagné"|"accompagné"},
       "view3d": {"extraction_id": str, "callouts": [...] (optionnel)} | null,
-                 # extraction_id de la page extraite avec role="garde"
+                 # extraction_id de la page extraite avec role="garde" —
+                 # absent/null : la page specs sort SANS vue 3D. Vue 3D et
+                 # tableau specs sur la même page : même extraction_id que specs
       "specs": {"extraction_id": str},
                  # OBLIGATOIRE : extraction_id de la page specs, APRÈS
                  # traduire_mots(extraction_id=..., role="specs") — ou, en
@@ -67,6 +69,7 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
     """
     if not isinstance(projet_json, dict):
         raise ValueError("projet_json doit être un objet JSON.")
+    _journaliser_entrees(projet_json)
     meta_in = projet_json.get("meta") or {}
     for champ in CHAMPS_META_OBLIGATOIRES:
         if not str(meta_in.get(champ, "")).strip():
@@ -136,6 +139,43 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
                 "hors_glossaire": projet_json.get("hors_glossaire", []),
             },
         }
+
+
+def _source(entree) -> str:
+    """Chemin utilisé pour une entrée (jamais son contenu ni son identifiant)."""
+    if not entree:
+        return "ABSENT"
+    if not isinstance(entree, dict):
+        return f"invalide({type(entree).__name__})"
+    for cle in ("extraction_id", "image_base64", "table"):
+        if entree.get(cle):
+            return cle
+    return "vide"
+
+
+def _journaliser_entrees(projet_json: dict) -> None:
+    """Une ligne de log serveur par appel : PRÉSENCE/ABSENCE de chaque entrée
+    reçue, sans contenu ni identifiant (les extraction_id donnent accès aux
+    données en cache). Sert à trancher, après un test Dust, entre « l'agent
+    n'a rien envoyé » et « le serveur a mal traité ce qu'il a reçu ».
+    `print(flush=True)` comme core/memlog.py : visible tel quel dans les logs
+    Render. Appelé AVANT toute validation : un appel refusé est aussi tracé."""
+    v3d = projet_json.get("view3d")
+    planches_in = projet_json.get("planches")
+    if not isinstance(planches_in, list):
+        planches_in = []
+    planches = ", ".join(
+        f"{_source(p)}{'+labels' if isinstance(p, dict) and p.get('labels') is not None else ''}"
+        for p in planches_in
+    )
+    print(
+        f"[assembler_pptx] view3d={_source(v3d)}"
+        f"{'+callouts' if isinstance(v3d, dict) and v3d.get('callouts') else ''}"
+        f" specs={_source(projet_json.get('specs'))}"
+        f" planches={len(planches_in)} [{planches}]"
+        f" hors_glossaire={'fourni' if projet_json.get('hors_glossaire') else 'ABSENT'}",
+        flush=True,
+    )
 
 
 def _nombre(valeur) -> bool:

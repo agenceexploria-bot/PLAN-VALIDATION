@@ -31,12 +31,16 @@ même code `core/`, jamais le même déploiement.
 Chaque outil a une description détaillée dans son propre docstring
 (`mcp_server/tools/*.py`) — c'est ce que l'agent Dust lit pour savoir quand
 et comment l'utiliser. Ordre d'appel attendu : `inventaire_pdf` →
-`extraire_page` (par page retenue, obtenir `extraction_id`) →
+`extraire_page` (par page retenue, obtenir `extraction_id` — role `garde`
+pour la page de la vue 3D, même si elle porte aussi le tableau specs : seul
+ce rôle produit l'image de la vue 3D) →
 `traduire_mots(extraction_id=...)` (role `planche` sur les planches,
 `specs` sur la page specs) →
 `assembler_pptx(planches=[{extraction_id}, ...], view3d={extraction_id},
-specs={extraction_id})` (obtenir `pptx_id`) → `verifier_rendu(pptx_id=..., words_par_page={page:
-extraction_id, ...})` (montrer les images à l'utilisateur, obtenir son
+specs={extraction_id})` (même `extraction_id` pour `view3d` et `specs` quand
+ils sont sur la même page ; sans `view3d`, page specs sans vue 3D) (obtenir
+`pptx_id`) → `verifier_rendu(pptx_id=..., words_par_page={page:
+extraction_id, ...})` (TOUTES les pages extraites, page specs comprise) (montrer les images à l'utilisateur, obtenir son
 accord) → `exporter_pdf(pptx_id=..., valide=True)`.
 
 **Principe général, appliqué à TOUTES les entrées** (cf. sections

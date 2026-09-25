@@ -136,8 +136,10 @@ plan-validation-app/
   se termine par « : » est rattaché à la valeur alignée à droite sur la même
   rangée du même bloc, mais une mise en page réellement tabulaire (libellés et
   valeurs dans des blocs de texte séparés) n'est pas reconstruite, et des
-  lignes parasites (annotations « détail / échelle », libellé coupé sur deux
-  lignes comme « TOP PLATFORM: ANTI SLIP TEAR METAL ») s'y glissent : l'étape 3 affiche un tableau
+  lignes parasites (annotations « détail / échelle », libellé coupé sur
+  plusieurs lignes ABSENT du lexique cartouche/specs — une expression du
+  lexique coupée ainsi, comme « TOP PLATFORM: ANTI SLIP TEAR METAL », est
+  refusionnée en une ligne) s'y glissent : l'étape 3 affiche un tableau
   éditable précisément pour cette raison — à corriger au cas par cas plutôt
   que de faire confiance à l'automatique.
 - **Étiquettes en phrase hors glossaire quand le fabricant scinde une

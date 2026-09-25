@@ -307,6 +307,41 @@ def test_assembler_pptx_specs_par_extraction_id(pdf_id, planche_300dpi):
     assert table[0][0] in textes
 
 
+def test_assembler_pptx_vue_3d_et_specs_meme_page(pdf_id, planche_300dpi, capsys):
+    """2e test Dust réel : page specs sans vue 3D. Scénario contrôlé du
+    chemin documenté : page 1 (vue 3D + tableau specs) extraite UNE fois avec
+    role='garde', traduite avec role='specs', même extraction_id pour view3d
+    et specs -> la vue 3D est bien déposée sur la page specs. Le log serveur
+    trace la présence de chaque entrée, sans identifiant."""
+    from mcp_server import util
+    from pptx import Presentation
+    import io
+
+    page1 = extraction.extraire_page(pdf_id=pdf_id, page_num=1, dpi=150, role="garde")
+    eid1 = page1["extraction_id"]
+    traduction.traduire_mots(extraction_id=eid1, role="specs")
+    eid = planche_300dpi["extraction_id"]
+    traduction.traduire_mots(extraction_id=eid, role="planche")
+    capsys.readouterr()
+    resultat = assemblage.assembler_pptx({
+        "meta": META_VALIDE, "view3d": {"extraction_id": eid1}, "specs": {"extraction_id": eid1},
+        "planches": [{"extraction_id": eid}],
+    })
+    log = capsys.readouterr().out
+    assert "[assembler_pptx] view3d=extraction_id specs=extraction_id planches=1 [extraction_id]" in log
+    assert eid1 not in log and eid not in log
+    prs = Presentation(io.BytesIO(util.resoudre_pptx(None, resultat["pptx_id"])))
+    assert any(sh.shape_type == 13 for sh in prs.slides[1].shapes)  # PICTURE
+
+
+def test_assembler_pptx_journalise_view3d_absent(capsys):
+    """Appel refusé (specs manquant) : la présence/absence des entrées est
+    tracée quand même, avant la validation."""
+    with pytest.raises(ValueError):
+        assemblage.assembler_pptx({"meta": META_VALIDE, "planches": ["pas un objet"]})
+    assert "view3d=ABSENT specs=ABSENT planches=1 [invalide(str)]" in capsys.readouterr().out
+
+
 def test_assembler_pptx_sans_traduire_mots_refuse(pdf_id):
     page = extraction.extraire_page(pdf_id=pdf_id, page_num=2, dpi=150, role="planche")
     with pytest.raises(ValueError, match=r"planches\[0\].*traduire_mots"):

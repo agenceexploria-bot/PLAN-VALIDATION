@@ -25,7 +25,10 @@ def verifier_rendu(
 
     `words_par_page` (optionnel) : {"<page_num>": extraction_id | words_data,
     ...}, agrégé par l'appelant depuis les réponses de `extraire_page` sur
-    les planches dessin — chaque valeur est SOIT l'`extraction_id` retourné
+    TOUTES les pages extraites — planches dessin ET page specs : sans la
+    page specs, les valeurs du tableau specs (vitesse, capacité, n° offre,
+    RAL...) remontent à tort dans `deck_absents_de_la_source` (vu au 2e test
+    Dust réel). Chaque valeur est SOIT l'`extraction_id` retourné
     par `extraire_page` (chemin NORMAL : ne transmet PAS le JSON complet),
     SOIT `words_data`/la réponse complète en repli (petits fichiers, tests
     directs). NE RECONSTRUISEZ JAMAIS ces données à la main : agréger

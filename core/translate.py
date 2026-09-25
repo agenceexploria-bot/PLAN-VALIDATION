@@ -251,6 +251,48 @@ def _valeur_sur_la_meme_rangee(words, indices):
     return sorted(candidats, key=lambda w: w["bbox"][0])
 
 
+def _ligne_suivante_dans_la_colonne(words, lignes, valeur):
+    """Ligne (liste d'indices) qui prolonge `valeur` juste en dessous, dans la
+    même colonne, quel que soit son bloc (« ANTI SLIP TEAR » puis « METAL »,
+    bloc distinct sur le plan réel). None s'il n'y en a pas."""
+    x0 = min(w["bbox"][0] for w in valeur)
+    x1 = max(w["bbox"][2] for w in valeur)
+    y0 = min(w["bbox"][1] for w in valeur)
+    y1 = max(w["bbox"][3] for w in valeur)
+    h = y1 - y0
+    pris = {id(w) for w in valeur}
+    candidates = [
+        ind for ind in lignes
+        if not any(id(words[i]) in pris for i in ind)
+        and all(x0 - h <= words[i]["bbox"][0] and words[i]["bbox"][2] <= x1 + h for i in ind)
+        and y0 < min(words[i]["bbox"][1] for i in ind) <= y1 + h
+    ]
+    return min(candidates, key=lambda ind: min(words[i]["bbox"][1] for i in ind), default=None)
+
+
+def _libelle_coupe_du_lexique(words, lignes, indices):
+    """Expression du lexique cartouche/specs coupée sur plusieurs lignes : un
+    libellé « … : », sa valeur alignée à droite sur la même rangée, puis au
+    plus une ligne de suite en dessous (ex. « TOP PLATFORM : » / « ANTI SLIP
+    TEAR » / « METAL »). Retourne (traduction validée, mots consommés) SEULEMENT
+    si l'expression complète figure dans le lexique — rien n'est deviné ;
+    None sinon."""
+    ligne = [words[i] for i in indices]
+    if not ligne[-1]["text"].endswith(":"):
+        return None
+    valeur = _valeur_sur_la_meme_rangee(words, indices)
+    if not valeur:
+        return None
+    libelle = " ".join(w["text"] for w in ligne).rstrip(": ")
+    suite = _ligne_suivante_dans_la_colonne(words, lignes, valeur)
+    for mots_valeur in (valeur, valeur + ([words[i] for i in suite] if suite else [])):
+        phrase = f"{libelle}: " + " ".join(w["text"] for w in mots_valeur)
+        traduction = glossaire.traduire_cartouche_specs(phrase)
+        if traduction is not None:
+            return traduction, ligne + mots_valeur
+    return None
+
+
 def extraire_tableau_specs(words_data: dict, secours=None):
     """Reconstruit le tableau specs FR (étape 3a) directement à partir d'une
     page « alimente la page specs » du plan fabricant, sans relevé manuel :
@@ -263,7 +305,10 @@ def extraire_tableau_specs(words_data: dict, secours=None):
     à droite sur la même rangée du même bloc. Une ligne sans libellé reconnu est incluse quand même
     (premier mot traduit via `secours`, statut "hors_glossaire") plutôt que
     silencieusement ignorée — sauf si elle ne contient aucune valeur (bandeau
-    décoratif, titre de section).
+    décoratif, titre de section). Une expression du lexique coupée sur
+    plusieurs lignes (« TOP PLATFORM : ANTI SLIP TEAR METAL », cf.
+    `_libelle_coupe_du_lexique`) donne UNE ligne : sa traduction validée en
+    libellé, valeur vide.
 
     Retourne (table_fr, termes_hors_glossaire) où table_fr = liste de
     tuples (libellé_fr, valeur).
@@ -272,9 +317,22 @@ def extraire_tableau_specs(words_data: dict, secours=None):
     table_fr = []
     hors_glossaire = []
 
-    for indices in _construire_lignes(words):
+    lignes = _construire_lignes(words)
+    # Premier passage : les expressions coupées, pour que leurs lignes de
+    # valeur ne ressortent pas en lignes de tableau absurdes (« ANTI -> SLIP TEAR »).
+    fusions, consommes = {}, set()
+    for k, indices in enumerate(lignes):
+        fusion = _libelle_coupe_du_lexique(words, lignes, indices)
+        if fusion is not None:
+            fusions[k] = fusion[0]
+            consommes |= {id(w) for w in fusion[1]}
+
+    for k, indices in enumerate(lignes):
         n = len(indices)
-        if n == 0:
+        if k in fusions:
+            table_fr.append((fusions[k], ""))
+            continue
+        if n == 0 or all(id(words[i]) in consommes for i in indices):
             continue
 
         label_taille, label_res = 0, None
