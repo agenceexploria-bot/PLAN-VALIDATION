@@ -318,3 +318,18 @@ def test_controle_completude_signale_un_bloc_specs_d_ancien_projet(tmp_path):
 
     alertes = verify.controle_completude(out, meta)
     assert any("Slide 2" in a and "spécifications" in a for a in alertes), alertes
+
+
+def test_ligne_specs_sans_valeur_fusionnee_sur_les_deux_colonnes():
+    """Expression du lexique sans découpage libellé/valeur validé (« Plateforme
+    en tôle larmée antidérapante ») : une seule cellule sur toute la largeur,
+    plutôt qu'une cellule valeur vide qui passe pour un oubli (choix utilisateur)."""
+    from pptx.util import Cm
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    tbl = assemble.add_fr_table(slide, Cm(1), Cm(1), Cm(10.8), [
+        ("Vitesse", "0,15 M/SN"), ("Plateforme en tôle larmée antidérapante", ""),
+    ])
+    assert not tbl.cell(0, 0).is_merge_origin
+    assert tbl.cell(1, 0).is_merge_origin and tbl.cell(1, 1).is_spanned
+    assert tbl.cell(1, 0).text == "Plateforme en tôle larmée antidérapante"

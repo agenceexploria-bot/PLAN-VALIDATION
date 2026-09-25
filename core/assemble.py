@@ -494,6 +494,11 @@ def add_fr_table(slide, left, top, width, rows, bas_max=None):
             run = tf.paragraphs[0].add_run(); run.text = txt
             run.font.size = Pt(taille_pt); run.font.bold = bold; run.font.color.rgb = NOIR
             cell_border(cell._tc)
+        if val == "":
+            # Expression du lexique sans découpage libellé/valeur validé (ex.
+            # « Plateforme en tôle larmée antidérapante ») : une cellule vide
+            # passerait pour un oubli, on l'étend sur les deux colonnes.
+            tbl.cell(r, 0).merge(tbl.cell(r, 1))
     return tbl
 
 
