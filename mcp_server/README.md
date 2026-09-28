@@ -422,6 +422,16 @@ d'exécution shell tout court. À confirmer par l'essai réel.
   restent identiques à l'octet. Conséquence assumée : dans le PDF, le texte
   de ces deux cellules est très légèrement plus petit que dans le PPTX ouvert
   sous PowerPoint.
+- **Mémoire du conteneur journalisée, pas affichée par Render gratuit.**
+  Après chaque travail lourd (`inventaire_pdf`, `extraire_page`,
+  `verifier_rendu`, `exporter_pdf`), une ligne
+  `[mem] <outil> courant=<Mo> pic=<Mo> limite=<Mo>` est écrite dans les
+  logs, lue dans le cgroup du conteneur (v2, repli v1 : sous-process
+  `soffice` compris). **`pic` est cumulé depuis le démarrage du conteneur,
+  pas par appel** : il ne redescend jamais, un pic élevé peut dater d'un
+  appel précédent. Valeur illisible (Windows, noyau sans `memory.peak`) :
+  « indisponible », jamais d'exception.
+
 - **Polices du rendu dans le conteneur : correctif pas encore vérifié.**
   Image construite et déployée sur Render (commit `fe752d4`), pipeline
   complet réussi avec un vrai agent Dust — mais le PDF produit avait des

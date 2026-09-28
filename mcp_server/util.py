@@ -29,7 +29,7 @@ from PIL import Image
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from core import cartouche_libreoffice
+from core import cartouche_libreoffice, memlog
 
 from . import cache_disque, extraction_cache, pdf_cache
 
@@ -237,6 +237,7 @@ def travail_lourd(outil: str):
     try:
         yield
     finally:
+        memlog.logger_memoire_conteneur(outil)
         VERROU_TRAVAIL_LOURD.release()
 
 
