@@ -502,6 +502,46 @@ def test_exporter_pdf_valide_avec_empreinte_correcte(rendu_verifie):
     assert _contenu_publie(resultat["pdf_url"])[:5] == b"%PDF-"
 
 
+def test_exporter_pdf_livre_le_pdf_et_le_pptx_verifie(rendu_verifie):
+    """L'utilisateur juge sur les deux fichiers : exporter_pdf renvoie un lien
+    frais vers le PPTX exporté, qui est bien celui vérifié (même sha256).
+    Chaque lien ne sert qu'une fois."""
+    import hashlib
+
+    import fitz
+
+    pptx_base64, resultat_verif = rendu_verifie
+    resultat = export.exporter_pdf(
+        pptx_base64, valide=True,
+        pptx_sha256_verifie=resultat_verif["pptx_sha256"],
+        moteur=resultat_verif["moteur"],
+    )
+    pdf = _contenu_publie(resultat["pdf_url"])
+    pptx = _contenu_publie(resultat["pptx_url"])
+    assert hashlib.sha256(pdf).hexdigest() == resultat["pdf_sha256"]
+    assert hashlib.sha256(pptx).hexdigest() == resultat_verif["pptx_sha256"] == resultat["pptx_sha256"]
+    for url in (resultat["pdf_url"], resultat["pptx_url"]):
+        assert fichiers.recuperer_et_invalider(_jeton_de(url)) is None, "lien réutilisable"
+    message = " ".join(resultat["a_signaler_a_l_utilisateur"])
+    assert resultat["pdf_sha256"] in message and resultat["pptx_sha256"] in message
+
+    # Cartouche complet dans le PDF livré (cf. core/cartouche_libreoffice.py).
+    if resultat["moteur"] == "libreoffice":
+        with fitz.open(stream=pdf, filetype="pdf") as doc:
+            for page in list(doc)[1:]:
+                assert "poursuites judiciaires" in " ".join(page.get_text().split())
+                assert max(d["rect"].y1 for d in page.get_drawings()) <= page.rect.height
+
+
+def test_verifier_rendu_livre_le_pptx_verifie(rendu_verifie):
+    import hashlib
+
+    _, resultat = rendu_verifie
+    pptx = _contenu_publie(resultat["pptx_url"])
+    assert hashlib.sha256(pptx).hexdigest() == resultat["pptx_sha256"]
+    assert resultat["pptx_sha256"] in " ".join(resultat["a_signaler_a_l_utilisateur"])
+
+
 # ---------------------------------------------------------------------------
 # Tenue du palier Render à 512 Mo (cf. mcp_server/util.py::VERROU_TRAVAIL_LOURD
 # et mcp_server/tools/verification.py::LARGEUR_MAX_APERCU_PX)

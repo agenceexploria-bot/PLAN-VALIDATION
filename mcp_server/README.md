@@ -40,8 +40,20 @@ planches, `specs` sur la page specs) →
 absent, et signalée dans `a_signaler_a_l_utilisateur`, à relayer avant
 `verifier_rendu` ; `view3d={extraction_id}` seulement pour une vue 3D sur
 une autre page) (obtenir `pptx_id`) → `verifier_rendu(pptx_id=..., words_par_page={page:
-extraction_id, ...})` (TOUTES les pages extraites, page specs comprise) (montrer les images à l'utilisateur, obtenir son
-accord) → `exporter_pdf(pptx_id=..., valide=True)`.
+extraction_id, ...})` (TOUTES les pages extraites, page specs comprise) (joindre le PPTX et les images, obtenir
+l'accord de l'utilisateur) → `exporter_pdf(pptx_id=..., valide=True)` (joindre le PDF et le PPTX).
+
+**L'utilisateur juge sur deux fichiers** : le PPTX (fichier de travail,
+ouvert dans PowerPoint) et le rendu LibreOffice (images, puis PDF).
+`verifier_rendu` et `exporter_pdf` renvoient donc chacun un `pptx_url` FRAIS
+du PPTX vérifié (même sha256 que `pptx_sha256`) — le lien d'`assembler_pptx`
+a expiré ou servi entre-temps — et un `a_signaler_a_l_utilisateur` qui cite
+les sha256. L'agent télécharge chaque fichier dès réception et le JOINT
+comme fichier réel dans la conversation (jamais d'URL brute) ; si un
+téléchargement échoue, il s'arrête et le dit, sans document de
+remplacement. Le PPTX republié s'appelle `plan.pptx` (comme le PDF,
+`plan.pdf`) : ces deux outils ne reçoivent que `pptx_id`, pas le nom donné
+par `assembler_pptx`.
 
 **Principe général, appliqué à TOUTES les entrées** (cf. sections
 suivantes) : aucun blob (PDF, image, PPTX, JSON de mots) ne transite par
@@ -231,7 +243,7 @@ produit un fichier (image, PPTX, PDF) renvoie donc une **URL de
 téléchargement à usage unique** (`..._url` + `..._sha256`), jamais le
 contenu en base64.
 
-Ces URLs servent uniquement à MONTRER un fichier à l'utilisateur (images
+Ces URLs servent uniquement à REMETTRE un fichier à l'utilisateur (images
 de vérification, PPTX, PDF final). L'agent ne doit jamais les télécharger
 pour ré-encoder le contenu en base64 et le passer à l'outil suivant :
 celui-ci reçoit un identifiant (`extraction_id`, `pptx_id`, cf. section

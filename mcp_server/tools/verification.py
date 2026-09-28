@@ -23,6 +23,10 @@ from .. import fichiers, util
 # sous-process avec les planches A3 300 dpi (4961 px) embarquées, 234 Mo sans.
 LARGEUR_MAX_APERCU_PX = 1754
 
+# Nom du PPTX republié par `verifier_rendu` / `exporter_pdf` : ils ne
+# reçoivent que son identifiant, pas le nom donné par `assembler_pptx`.
+NOM_PPTX = "plan.pptx"
+
 
 def verifier_rendu(
     pptx_base64: str = None, words_par_page: dict = None, meta: dict = None, pptx_id: str = None,
@@ -73,11 +77,17 @@ def verifier_rendu(
 
     Retourne {"moteur", "slides": [{"url", "sha256"}, ...],
     "alertes_completude": [...], "rapport_cotes": {...} | null,
-    "pptx_sha256": str}. Chaque slide est une URL de téléchargement à usage
-    unique (5 min de durée de vie), pas du contenu inline : plusieurs images
-    dans une seule réponse dépassent vite la limite de 1 Mio par réponse
-    d'outil du protocole MCP — montrez-les à l'utilisateur en les
-    récupérant chacune par un GET simple. `pptx_sha256` DOIT être renvoyé
+    "pptx_sha256": str, "pptx_url": str, "a_signaler_a_l_utilisateur": [str]}.
+    Chaque slide, comme `pptx_url` (le PPTX vérifié lui-même, même sha256),
+    est une URL de téléchargement à usage unique (5 min de durée de vie), pas
+    du contenu inline : plusieurs images dans une seule réponse dépassent
+    vite la limite de 1 Mio par réponse d'outil du protocole MCP.
+    DÈS RÉCEPTION, téléchargez le PPTX et chaque image, et JOIGNEZ-LES comme
+    fichiers réels dans la conversation — jamais d'URL brute à l'utilisateur
+    — avec le message de `a_signaler_a_l_utilisateur` (il cite les sha256),
+    AVANT de demander la validation. Si un téléchargement échoue, arrêtez-vous
+    et dites-le clairement : ne fournissez jamais de document de
+    remplacement. `pptx_sha256` DOIT être renvoyé
     tel quel à `exporter_pdf` (paramètre `pptx_sha256_verifie`) pour prouver
     que le PDF exporté correspond exactement à CE PPTX-ci, vu et validé par
     l'utilisateur sur ces images.
@@ -117,10 +127,22 @@ def verifier_rendu(
             if wpp is not None:
                 rapport_cotes = verify.controle_cotes(wpp, pptx_path)
 
+            # Lien FRAIS vers le PPTX vérifié lui-même (celui d'assembler_pptx
+            # a expiré ou a déjà servi) : l'utilisateur juge sur les deux.
+            pptx_publie = fichiers.publier(pptx_path, NOM_PPTX, fichiers.TYPE_PPTX)
+
             return {
                 "moteur": resultat_rendu["moteur"],
                 "slides": slides,
                 "alertes_completude": alertes_completude,
                 "rapport_cotes": rapport_cotes,
                 "pptx_sha256": pptx_sha256,
+                "pptx_url": pptx_publie["url"],
+                "a_signaler_a_l_utilisateur": [
+                    f"Fichiers joints pour validation : le PPTX vérifié ({NOM_PPTX}, "
+                    f"sha256 {pptx_sha256}), fichier de travail à ouvrir dans "
+                    f"PowerPoint, et {len(slides)} image(s) du rendu "
+                    f"{resultat_rendu['moteur']}, qui est celui du PDF final. "
+                    "Validez-vous ce rendu pour l'export PDF ?"
+                ],
             }

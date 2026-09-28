@@ -132,10 +132,7 @@ def assembler_pptx(projet_json: dict) -> dict[str, Any]:
 
         nb_slides = len(Presentation(str(out_path)).slides)
         pptx_id = cache_disque.PPTX.mettre_en_cache(out_path.read_bytes())
-        publication = fichiers.publier(
-            out_path, nom_fichier,
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        )
+        publication = fichiers.publier(out_path, nom_fichier, fichiers.TYPE_PPTX)
 
         return {
             "pptx_id": pptx_id,

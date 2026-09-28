@@ -31,6 +31,27 @@ def test_publier_puis_recuperer_rend_le_bon_contenu(tmp_path):
     assert resultat["nom_fichier"] == "x.png"
 
 
+def test_publier_ne_charge_pas_le_fichier_en_memoire(tmp_path):
+    """Publier un PPTX de 5 Mo pendant un travail lourd ne doit pas
+    s'ajouter au pic mémoire (palier Render à 512 Mo) : copie disque à
+    disque, empreinte calculée en flux."""
+    import tracemalloc
+
+    source = tmp_path / "plan.pptx"
+    source.write_bytes(os.urandom(5 * 1024 * 1024))
+    tracemalloc.start()
+    try:
+        publication = fichiers.publier(source, "plan.pptx", fichiers.TYPE_PPTX)
+        _, pic = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Seul reste le tampon de copie (1 Mio sous Windows), indépendant de la
+    # taille du fichier — l'ancienne version chargeait les 5 Mo.
+    assert pic < 2 * 1024 * 1024, f"pic de {pic / 1e6:.1f} Mo pendant la publication"
+    assert publication["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert publication["octets"] == 5 * 1024 * 1024
+
+
 def test_usage_unique_deuxieme_recuperation_echoue(tmp_path):
     source = tmp_path / "x.png"
     source.write_bytes(b"une-seule-fois")

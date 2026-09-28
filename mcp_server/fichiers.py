@@ -65,6 +65,7 @@ DUREE_VIE_SECONDES = 5 * 60
 SEUIL_ORPHELIN_SECONDES = 15 * 60
 PREFIXE_ROUTE = "/fichiers"
 PREFIXE_DOSSIER = "mcp_plan_validation_publies_"
+TYPE_PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
 def purger_dossiers_orphelins_au_demarrage(seuil_secondes: float = SEUIL_ORPHELIN_SECONDES) -> int:
@@ -151,15 +152,20 @@ def publier(chemin_source: Path, nom_fichier: str, content_type: str) -> dict:
     "expire_dans_s"}. La copie publiée a son propre cycle de vie,
     indépendant du nettoyage de fin d'appel (cf.
     mcp_server/util.workdir_temporaire) — le fichier D'ORIGINE peut être
-    supprimé juste après sans affecter le téléchargement."""
-    contenu = Path(chemin_source).read_bytes()
-    sha256 = hashlib.sha256(contenu).hexdigest()
+    supprimé juste après sans affecter le téléchargement.
+
+    Copie disque à disque et empreinte calculée en flux : le fichier n'est
+    jamais chargé en entier en mémoire (un PPTX de 3 à 5 Mo publié pendant un
+    travail lourd ne doit pas s'ajouter au pic, palier Render à 512 Mo)."""
+    jeton = secrets.token_urlsafe(32)
+    chemin_publie = _DOSSIER / jeton
+    shutil.copyfile(chemin_source, chemin_publie)
+    with open(chemin_publie, "rb") as f:
+        sha256 = hashlib.file_digest(f, "sha256").hexdigest()
+    octets = chemin_publie.stat().st_size
 
     with _VERROU:
         _purger_expires()
-        jeton = secrets.token_urlsafe(32)
-        chemin_publie = _DOSSIER / jeton
-        chemin_publie.write_bytes(contenu)
         _REGISTRE[jeton] = {
             "chemin": chemin_publie,
             "expire_a": time.monotonic() + DUREE_VIE_SECONDES,
@@ -170,7 +176,7 @@ def publier(chemin_source: Path, nom_fichier: str, content_type: str) -> dict:
     return {
         "url": f"{base_url_publique()}{PREFIXE_ROUTE}/{jeton}",
         "sha256": sha256,
-        "octets": len(contenu),
+        "octets": octets,
         "expire_dans_s": DUREE_VIE_SECONDES,
     }
 

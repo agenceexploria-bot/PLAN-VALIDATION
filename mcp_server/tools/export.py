@@ -8,6 +8,7 @@ from typing import Any
 from core import render
 
 from .. import fichiers, util
+from .verification import NOM_PPTX
 
 # Largeur maximale des images dans la COPIE JETABLE du PPTX passée à
 # LibreOffice pour l'export — jamais dans le PPTX de référence, ni dans
@@ -57,11 +58,16 @@ def exporter_pdf(
     LibreOffice sur ce serveur Linux (PowerPoint/COM indisponible).
 
     Retourne {"moteur": str, "pdf_url": str, "pdf_sha256": str,
-    "nom_fichier": str}. `pdf_url` est une URL de téléchargement à usage
-    unique (5 min de durée de vie), pas du contenu inline : un PDF réel
-    dépasse largement la limite de 1 Mio par réponse d'outil du protocole
-    MCP. Donnez ce lien à l'utilisateur pour qu'il télécharge le document
-    final directement — c'est le seul document diffusé.
+    "nom_fichier": str, "pptx_url": str, "pptx_sha256": str,
+    "a_signaler_a_l_utilisateur": [str]}. `pdf_url` et `pptx_url` (le PPTX
+    exporté, même sha256 que celui vérifié) sont des URLs de téléchargement
+    à usage unique (5 min de durée de vie), pas du contenu inline : un PDF
+    réel dépasse largement la limite de 1 Mio par réponse d'outil du
+    protocole MCP. DÈS RÉCEPTION, téléchargez le PDF ET le PPTX et
+    JOIGNEZ-LES comme fichiers réels dans la conversation — jamais d'URL
+    brute à l'utilisateur — avec le message de `a_signaler_a_l_utilisateur`
+    (il cite les sha256). Si un téléchargement échoue, arrêtez-vous et
+    dites-le clairement : ne fournissez jamais de document de remplacement.
     """
     if not valide:
         raise ValueError(
@@ -101,9 +107,18 @@ def exporter_pdf(
                 resultat = render.exporter_pdf(a_convertir, moteur=moteur)
             pdf_path = Path(resultat["pdf"])
             publication = fichiers.publier(pdf_path, pdf_path.name, "application/pdf")
+            pptx_publie = fichiers.publier(pptx_path, NOM_PPTX, fichiers.TYPE_PPTX)
             return {
                 "moteur": resultat["moteur"],
                 "pdf_url": publication["url"],
                 "pdf_sha256": publication["sha256"],
                 "nom_fichier": pdf_path.name,
+                "pptx_url": pptx_publie["url"],
+                "pptx_sha256": pptx_publie["sha256"],
+                "a_signaler_a_l_utilisateur": [
+                    f"Fichiers joints : le PDF final ({pdf_path.name}, sha256 "
+                    f"{publication['sha256']}), rendu {resultat['moteur']}, et le "
+                    f"PPTX dont il est issu ({NOM_PPTX}, sha256 "
+                    f"{pptx_publie['sha256']}), fichier de travail à ouvrir dans PowerPoint."
+                ],
             }
