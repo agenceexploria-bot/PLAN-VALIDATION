@@ -87,7 +87,8 @@ def exporter_pdf(
             pptx_path = wd / "plan.pptx"
             pptx_path.write_bytes(contenu)
             # Conversion faite sur une COPIE jetable aux images alignées sur
-            # la sortie réelle de LibreOffice (cf. LARGEUR_MAX_EXPORT_PX) :
+            # la sortie réelle de LibreOffice (cf. LARGEUR_MAX_EXPORT_PX) et
+            # au cartouche adapté à LibreOffice (cf. util.copie_allegee) :
             # le PPTX de référence n'est jamais modifié, et le PDF produit
             # est celui qui est publié à l'utilisateur.
             # Même NOM de fichier dans un sous-dossier : le moteur nomme le

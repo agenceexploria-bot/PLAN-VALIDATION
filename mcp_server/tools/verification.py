@@ -37,7 +37,9 @@ def verifier_rendu(
     lui-même, donc sans perte visible à l'écran. Le PPTX assemblé et le PDF
     d'`exporter_pdf` gardent leur PLEINE résolution : ce qui est validé ici
     correspond bien au livrable, seule l'empreinte mémoire de l'aperçu est
-    réduite.
+    réduite. Cette copie a aussi son cartouche adapté à LibreOffice (cf.
+    core/cartouche_libreoffice.py), exactement comme celle d'`exporter_pdf` :
+    les images montrent donc le cartouche tel qu'il sera dans le PDF.
 
     Fournissez EXACTEMENT UN des deux : `pptx_id` (chemin NORMAL, retourné
     par `assembler_pptx` — le PPTX reste sur le serveur) ou `pptx_base64`

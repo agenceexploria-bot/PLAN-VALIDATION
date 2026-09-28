@@ -16,6 +16,7 @@ mcp_server/pdf_cache.py, mcp_server/extraction_cache.py) : les fonctions
 import base64
 import binascii
 import io
+import re
 import shutil
 import tempfile
 import threading
@@ -23,11 +24,16 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from lxml import etree
 from PIL import Image
 
 from mcp.server.mcpserver.exceptions import ToolError
 
+from core import cartouche_libreoffice
+
 from . import cache_disque, extraction_cache, pdf_cache
+
+_MOTIF_SLIDE = re.compile(r"ppt/slides/slide\d+\.xml")
 
 # Même limite que app.py::LIMITE_PDF_MO (app Streamlit) — un PDF fabricant
 # plus gros risque de saturer la mémoire du conteneur avant même l'extraction.
@@ -309,6 +315,13 @@ def copie_allegee(source: Path, destination: Path, largeur_max: int) -> Path:
     Réduit UNE image à la fois : deux planches A3 décompressées simultanément
     en RAM coûteraient plus cher que ce qu'on cherche à économiser.
 
+    Adapte aussi le cartouche au moteur LibreOffice (cf.
+    core/cartouche_libreoffice.py) : sans ça, LibreOffice impute la hauteur
+    des cellules fusionnées sur plusieurs lignes à la seule dernière ligne,
+    le cartouche déborde de 48 à 64 pt sous la page et la mention légale
+    disparaît du PDF. Même règle que pour les images : seule cette copie est
+    touchée, jamais le PPTX livré.
+
     Retourne le chemin À RENDRE : `destination` si l'allègement a abouti,
     `source` sinon. Un PPTX illisible comme archive (fichier tronqué, contenu
     qui n'est pas un OOXML) doit produire l'erreur explicite du moteur de
@@ -318,12 +331,15 @@ def copie_allegee(source: Path, destination: Path, largeur_max: int) -> Path:
     try:
         with zipfile.ZipFile(source) as src, \
                 zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as dst:
+            hauteur_slide = cartouche_libreoffice.hauteur_slide_emu(src.read("ppt/presentation.xml"))
             for item in src.infolist():
                 donnees = src.read(item.filename)
                 if item.filename.startswith("ppt/media/"):
                     donnees = _reduire_image(donnees, largeur_max)
+                elif _MOTIF_SLIDE.fullmatch(item.filename):
+                    donnees = cartouche_libreoffice.ajuster_slide_xml(donnees, hauteur_slide)
                 dst.writestr(item, donnees)
-    except (OSError, zipfile.BadZipFile):
+    except (OSError, KeyError, zipfile.BadZipFile, etree.XMLSyntaxError):
         return source
     return destination
 

@@ -287,6 +287,10 @@ pytest tests/mcp/
   planche en pleine résolution (4961×3508) dans le PPTX produit.
 - `test_deploiement_mcp.py` — contrôles statiques sur `Dockerfile` /
   `requirements.txt` (fonts-liberation, versions épinglées).
+- `test_cartouche_libreoffice.py` — PDF LibreOffice réel des deux gabarits
+  rendus depuis la copie jetable : aucun trait ni texte sous la page,
+  mention légale et adresse complètes, adresse sous le logo, règle des
+  cellules fusionnées, zone du dessin inchangée.
 
 Ces deux derniers fichiers nécessitent la fixture `tests/fixtures/DHYA2_test.pdf`
 (déjà présente, partagée avec les tests de l'app Streamlit) — ils sont
@@ -382,6 +386,30 @@ d'exécution shell tout court. À confirmer par l'essai réel.
 
 ## Limites connues (honnêtes)
 
+- **Cartouche des gabarits sous LibreOffice : adapté sur la copie de rendu
+  seulement.** LibreOffice impute la hauteur de contenu d'une cellule
+  fusionnée verticalement (`rowSpan`) à la SEULE dernière ligne qu'elle
+  couvre (30,3 pt), au lieu de la comparer à la hauteur cumulée des lignes
+  (85,5 pt) comme PowerPoint ; les paragraphes vides comptent. L'adresse
+  (3 paragraphes vides + 3 lignes) et « Bon pour fabrication / Date /
+  Signature » (3 lignes + 4 vides) gonflent donc la dernière ligne : mesuré
+  sur les gabarits intacts, le cartouche déborde de 48,2 pt (LD82040), 49,2 pt
+  (planches LD64397) et 64,0 pt (page specs LD64397, interligne proportionnel
+  112 %) sous la page — et LibreOffice n'exporte pas ce qui est hors page :
+  mention légale absente du PDF, adresse tronquée. `util.copie_allegee`
+  (copie jetable de `verifier_rendu` ET d'`exporter_pdf`) applique
+  `core/cartouche_libreoffice.py` : paragraphes vides de tête/fin retirés,
+  cellule ancrée en bas (marge 3 pt) quand des vides de tête poussaient le
+  texte sous le logo, interligne (et au besoin police : adresse 10 → 8,5 pt,
+  « Bon pour fabrication » 10 → 9,5 pt ; mention légale inchangée) réduit
+  juste assez pour que chaque cellule fusionnée tienne dans sa dernière
+  ligne, et trait inférieur remonté de 0,5 pt dans la page (le tableau finit
+  pile au bord : sa demi-épaisseur dépassait). Débord mesuré après : 0,0 pt
+  sur les deux gabarits. Le haut du cartouche — donc la zone du dessin — et
+  toutes les autres formes ne bougent pas ; le PPTX livré et les gabarits
+  restent identiques à l'octet. Conséquence assumée : dans le PDF, le texte
+  de ces deux cellules est très légèrement plus petit que dans le PPTX ouvert
+  sous PowerPoint.
 - **Polices du rendu dans le conteneur : correctif pas encore vérifié.**
   Image construite et déployée sur Render (commit `fe752d4`), pipeline
   complet réussi avec un vrai agent Dust — mais le PDF produit avait des
