@@ -43,14 +43,55 @@ def cluster_bbox(words, keywords):
     return [min(xs0), min(ys0), max(xs1), max(ys1)]
 
 
+# Marges autour des mots du tableau specs fabricant, mesurées sur un plan
+# réel (DHYA2, page vue 3D + specs) :
+#   - gauche/haut/droite : les traits du tableau serrent ses mots (0,4 pt à
+#     gauche, 2,7 pt au-dessus) ; 3 pt suffisent à les couvrir ;
+#   - droite : PLAFONNÉE par le trait du cadre, contre lequel le tableau est
+#     collé (mots jusqu'à 1176,7 pt, cadre à 1180,6 pt). Au-delà, on
+#     interromprait le cadre sur toute la hauteur du tableau ;
+#   - bas : la dernière cellule descend nettement sous son texte (10,3 pt
+#     mesurés) — une marge serrée y laisserait le trait du tableau visible.
+MARGE_TABLEAU_PT = 3
+MARGE_BAS_TABLEAU_PT = 14
+
+
+def bbox_tableau(words, tb):
+    """Rectangle réel du tableau specs fabricant : la bbox des MOTS-CLÉS
+    (colonne des libellés) étendue aux VALEURS de ses lignes, qui ne
+    contiennent aucun mot-clé (« EX.26.396R1 », « 2000X1500 MM », « RAL
+    7016 »...) et débordent donc largement à droite de `tb`."""
+    x0, y0, x1, y1 = tb
+    for w in words:
+        bx0, by0, bx1, by1 = w["bbox"]
+        if bx0 >= x0 - 2 and y0 <= (by0 + by1) / 2 <= y1:
+            x1 = max(x1, bx1)
+    return [x0, y0, x1, y1]
+
+
 def auto_masks(words_data: dict, page_w, page_h):
-    """Deux rectangles : tableau specs et cartouche, élargis jusqu'aux bords
-    droit/bas (zones hors-3D par construction de la mise en page fabricant)."""
+    """Deux rectangles à masquer : le tableau specs fabricant et le cartouche.
+
+    Le tableau est masqué sur son EMPRISE PROPRE (bbox de ses mots + marge
+    minimale). Il l'était auparavant par une bande partant du haut de la page
+    et filant jusqu'au bord droit — « zone hors-3D par construction », ce qui
+    s'est révélé faux sur un plan réel : tout ce qui partageait cette colonne
+    au-dessus du tableau était effacé avec lui (moitié droite du cercle de
+    détail A, son libellé « DETAY A / ÖLÇEK 1:10 », haut et bord droit du
+    cadre). La vue 3D fournisseur doit apparaître COMPLÈTE : le tableau
+    anglais est la seule chose retirée, parce qu'il est reproduit en français
+    à côté sur la slide."""
     words = words_data["words"]
     masks = []
     tb = cluster_bbox(words, TABLE_KW)
     if tb:
-        masks.append([tb[0] - 6, 0, page_w, tb[3] + 10])
+        x0, y0, x1, y1 = bbox_tableau(words, tb)
+        masks.append([
+            max(0, x0 - MARGE_TABLEAU_PT),
+            max(0, y0 - MARGE_TABLEAU_PT),
+            min(page_w, x1 + MARGE_TABLEAU_PT),
+            min(page_h, y1 + MARGE_BAS_TABLEAU_PT),
+        ])
     ca = cluster_bbox(words, CARTOUCHE_KW)
     if ca:
         masks.append([ca[0] - 6, ca[1] - 6, page_w, page_h])

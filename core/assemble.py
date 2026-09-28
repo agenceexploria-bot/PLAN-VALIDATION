@@ -134,6 +134,32 @@ def bornes_verticales(slide, largeur_slide):
     return max(bandeau), min(cartouches)
 
 
+# Hauteur de recherche du bandeau de titre de la page specs, sous l'en-tête.
+HAUTEUR_RECHERCHE_BANDEAU = Cm(2)
+
+
+def bas_bandeau_specs(slide, largeur_slide):
+    """Bas du bandeau de titre de la page specs (« MONTE-CHARGE NON
+    ACCOMPAGNÉ »), sous lequel la vue 3D doit commencer. Propre à cette
+    slide : les planches n'ont pas ce bandeau (leur contenu démarre juste
+    sous l'en-tête), d'où une fonction distincte de `bornes_verticales`.
+
+    Lu sur la géométrie comme le reste, plutôt qu'en dur : la zone de la vue
+    3D était ancrée 50 pt plus haut que ce bandeau, et le centrage vertical
+    faisait alors remonter l'image d'environ 4 pt SOUS lui — le bandeau
+    recouvrait le haut du dessin (constaté sur un rendu réel). Le bandeau est
+    la forme large située immédiatement sous l'en-tête pleine largeur ; à
+    défaut, on retombe sur le bas de l'en-tête."""
+    entete = [sh.top + sh.height for sh in slide.shapes
+              if sh.top is not None and sh.top < Cm(0.5) and sh.width > 0.9 * largeur_slide]
+    bas_entete = max(entete) if entete else 0
+    bandeaux = [sh.top + sh.height for sh in slide.shapes
+                if sh.top is not None
+                and bas_entete <= sh.top < bas_entete + HAUTEUR_RECHERCHE_BANDEAU
+                and sh.width > 0.25 * largeur_slide]
+    return max(bandeaux) if bandeaux else bas_entete
+
+
 def zone_plan(slide, largeur_slide):
     """(left, top, width, height) de la zone standard du plan."""
     bas_bandeau, haut_cartouche = bornes_verticales(slide, largeur_slide)
@@ -556,7 +582,13 @@ def assembler(proj: dict) -> Path:
     retirer_blocs_specs(s2)
     purger_cartouche(s2, meta)
     if v3d:
-        geom2 = fit_picture(s2, wd / v3d["image"], Cm(0.6), Cm(2.3), Cm(17.2), Cm(15.3))
+        # Bas de zone inchangé ; seul le HAUT descend sous le bandeau de
+        # titre (cf. bas_bandeau_specs) au lieu de la valeur en dur qui le
+        # chevauchait. La vue reste limitée par la largeur, donc même taille.
+        bas_zone = Cm(2.3) + Cm(15.3)
+        haut_zone = bas_bandeau_specs(s2, W) + MARGE_ZONE_VERTICALE
+        geom2 = fit_picture(s2, wd / v3d["image"], Cm(0.6), haut_zone,
+                            Cm(17.2), bas_zone - haut_zone)
         for c in v3d.get("callouts", []):
             add_overlay(s2, c["text"], c["bbox"], geom2,
                         page_w=v3d.get("image_page_w_pt", PAGE_W_PT), wrap=True,

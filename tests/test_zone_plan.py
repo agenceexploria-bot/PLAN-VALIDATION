@@ -16,7 +16,7 @@ import pytest
 from PIL import Image
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.util import Cm
+from pptx.util import Cm, Emu
 
 from core import assemble
 
@@ -162,3 +162,32 @@ def test_tableau_specs_reste_au_dessus_du_cartouche(tmp_path, type_equipement, n
         f"{n_lignes} lignes : le tableau descend à {(tableau.top + hauteur_lignes) / 360000:.2f} cm, "
         f"le cartouche commence à {cartouche_top / 360000:.2f} cm"
     )
+
+
+@pytest.mark.parametrize("type_equipement", TYPES)
+def test_la_vue_3d_de_la_page_specs_ne_passe_pas_sous_le_bandeau(tmp_path, type_equipement):
+    """La zone de la vue 3D était ancrée en dur ~50 pt au-dessus du bandeau de
+    titre de la page specs : le centrage vertical faisait remonter l'image
+    d'environ 4 pt SOUS le bandeau, qui lui recouvrait le haut du dessin
+    (constaté sur un rendu réel). La zone est désormais dérivée du bandeau,
+    comme celle des planches l'est de sa propre géométrie."""
+    out = tmp_path / "specs.pptx"
+    Image.new("RGB", (1439, 1000), "white").save(tmp_path / "vue3d.png")  # ratio réel ≈ 1.44
+    assemble.assembler({
+        "base": assemble.base_pour_type(type_equipement), "out": out, "workdir": tmp_path,
+        "meta": {"numero": "LDTEST700", "client": "C", "dessinateur": "AB", "indice": "R00",
+                 "date": "01/01/2026", "equipement": "MONTE-CHARGE"},
+        "specs": {"table": [("Modèle", "DHYA.2")]},
+        "view3d": {"image": "vue3d.png", "image_page_w_pt": 1190.55},
+        "planches": _images(tmp_path, [1.414]),
+    })
+    prs = Presentation(out)
+    s2 = prs.slides[1]
+    bas_bandeau = assemble.bas_bandeau_specs(s2, prs.slide_width)
+    vues = [sh for sh in s2.shapes
+            if sh.shape_type == MSO_SHAPE_TYPE.PICTURE and sh.width > prs.slide_width * 0.2]
+    assert vues, "vue 3D absente de la page specs"
+    for sh in vues:
+        assert sh.top >= bas_bandeau, (
+            f"la vue 3D (haut={Emu(sh.top).pt:.1f} pt) remonte sous le bandeau "
+            f"(bas={Emu(bas_bandeau).pt:.1f} pt)")

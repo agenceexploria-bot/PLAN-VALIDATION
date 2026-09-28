@@ -129,7 +129,19 @@ plan-validation-app/
   texte fournisseur qui s'y trouve (par exemple, sur le PDF de test, le bloc
   des tolérances : « DETAY », « ÖLÇEK 1:5 », « SERBEST ÖLÇÜ TOLERANSLARI »…)
   reste dans sa langue d'origine. À contrôler visuellement à l'étape 4.
-  Point ouvert, à traiter avec la troncature de cette vue sur la droite.
+  Point ouvert. Depuis que la vue n'est plus amputée sur la droite, le
+  libellé « DETAY A / ÖLÇEK 1:10 » y apparaît lui aussi en turc, comme
+  « DETAY B » — il était auparavant effacé par le masque, pas traduit.
+- **Tableau fabricant non reconnu = tableau non effacé.** Le masquage du
+  tableau de caractéristiques anglais de la vue 3D repose sur des mots-clés
+  (`core/cover.py`, `TABLE_KW`). Si aucun n'est reconnu — plan d'un autre
+  fabricant, libellés dans une autre langue —, aucun masque n'est appliqué :
+  le tableau anglais reste visible dans l'image, à côté du tableau français
+  reconstruit. Choix NON DESTRUCTIF assumé : mieux vaut un doublon visible,
+  que l'utilisateur voit au contrôle visuel de l'étape 4, qu'un rectangle
+  blanc posé au jugé sur une vue 3D qu'on aurait alors amputée sans le
+  savoir (c'est exactement ce qui est arrivé avec l'ancien masque en bande
+  pleine hauteur).
 - **Bloc de tolérances des planches** : pour tenir dans ses petites cellules,
   le français y est composé dans une police très réduite (~4 pt).
 - **Reconstruction automatique du tableau specs imparfaite.** Un libellé qui
