@@ -500,3 +500,147 @@ def test_exporter_pdf_valide_avec_empreinte_correcte(rendu_verifie):
     assert resultat["pdf_sha256"]
     assert resultat["nom_fichier"].endswith(".pdf")
     assert _contenu_publie(resultat["pdf_url"])[:5] == b"%PDF-"
+
+
+# ---------------------------------------------------------------------------
+# Tenue du palier Render à 512 Mo (cf. mcp_server/util.py::VERROU_TRAVAIL_LOURD
+# et mcp_server/tools/verification.py::LARGEUR_MAX_APERCU_PX)
+# ---------------------------------------------------------------------------
+
+def test_un_seul_travail_lourd_a_la_fois(monkeypatch):
+    """Mesuré sur le scénario réel : une extraction coûte +90 à +166 Mo de
+    pic, un rendu LibreOffice ~410 Mo de sous-process — deux travaux lourds
+    simultanés dépassent les 512 Mo. `core/extract.py::VERROU_EXTRACTION` ne
+    couvrait pas ce chemin (les outils MCP appellent `extract.extraire_page`
+    directement, jamais `extraire_pdf`)."""
+    import threading
+
+    from mcp_server import util
+
+    entres = []
+    liberer = threading.Event()
+
+    def _travail_occupant():
+        with util.travail_lourd("occupant"):
+            entres.append("occupant")
+            liberer.wait(timeout=10)
+
+    fil = threading.Thread(target=_travail_occupant)
+    fil.start()
+    try:
+        while not entres:
+            pass
+        # Verrou déjà tenu : un second travail lourd ne doit pas démarrer.
+        assert util.VERROU_TRAVAIL_LOURD.locked()
+    finally:
+        liberer.set()
+        fil.join(timeout=10)
+    # ...et le verrou est bien rendu en sortie, même chemin d'erreur compris.
+    assert not util.VERROU_TRAVAIL_LOURD.locked()
+
+
+def test_serveur_occupe_echoue_avec_un_message_lisible(monkeypatch):
+    """Jamais d'attente indéfinie : passé ATTENTE_TRAVAIL_LOURD_S, l'appel
+    échoue en ToolError (seul type dont le SDK mcp transmet le texte) pour que
+    l'agent puisse l'expliquer et réessayer."""
+    import threading
+
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from mcp_server import util
+
+    monkeypatch.setattr(util, "ATTENTE_TRAVAIL_LOURD_S", 0.05)
+    liberer = threading.Event()
+    pret = threading.Event()
+
+    def _occupant():
+        with util.travail_lourd("occupant"):
+            pret.set()
+            liberer.wait(timeout=10)
+
+    fil = threading.Thread(target=_occupant)
+    fil.start()
+    try:
+        pret.wait(timeout=10)
+        with pytest.raises(ToolError, match=r"serveur occupé.*[Rr]elancez"):
+            with util.travail_lourd("verifier_rendu"):
+                pass
+    finally:
+        liberer.set()
+        fil.join(timeout=10)
+
+
+def test_apercu_allege_sans_toucher_au_livrable(projet_assemble, tmp_path):
+    """Le rendu de contrôle part d'une COPIE aux images réduites (~150 dpi,
+    déjà plus fin que le rendu lui-même) : ~161 Mo de pic en moins, mesurés.
+    Le PPTX assemblé, lui, garde sa pleine résolution — jamais de livrable
+    dégradé pour économiser de la mémoire sur un aperçu."""
+    import io
+    import zipfile
+
+    from PIL import Image
+
+    from mcp_server import util
+    from mcp_server.tools import verification as verif
+
+    _, pptx_base64, _ = projet_assemble
+    origine = tmp_path / "plan.pptx"
+    origine.write_bytes(base64.b64decode(pptx_base64))
+    allege = util.copie_allegee(
+        origine, tmp_path / "apercu.pptx", verif.LARGEUR_MAX_APERCU_PX)
+    assert allege != origine, "l'allègement aurait dû aboutir sur un PPTX valide"
+
+    def _largeurs(chemin):
+        largeurs = {}
+        with zipfile.ZipFile(chemin) as z:
+            for nom in z.namelist():
+                if not nom.startswith("ppt/media/"):
+                    continue
+                try:
+                    with Image.open(io.BytesIO(z.read(nom))) as img:
+                        largeurs[nom] = img.width
+                except Exception:
+                    pass
+        return largeurs
+
+    avant, apres = _largeurs(origine), _largeurs(allege)
+    assert any(l > verif.LARGEUR_MAX_APERCU_PX for l in avant.values()), \
+        "fixture sans image pleine résolution : le test ne prouverait rien"
+    assert all(l <= verif.LARGEUR_MAX_APERCU_PX for l in apres.values())
+    # Le livrable n'a pas bougé, ni en contenu ni en résolution.
+    assert base64.b64decode(pptx_base64) == origine.read_bytes()
+    assert avant == _largeurs(origine)
+
+
+def test_apercu_ne_fait_jamais_echouer_un_rendu(tmp_path):
+    """Un PPTX illisible comme archive doit produire l'erreur explicite du
+    moteur de rendu, pas un BadZipFile opaque venu de cette seule
+    optimisation mémoire : on retombe alors sur le fichier d'origine."""
+    from mcp_server import util
+    from mcp_server.tools import verification as verif
+
+    casse = tmp_path / "casse.pptx"
+    casse.write_bytes(b"PK\x03\x04 pptx factice")
+    assert util.copie_allegee(
+        casse, tmp_path / "apercu.pptx", verif.LARGEUR_MAX_APERCU_PX) == casse
+
+
+def test_exporter_pdf_ne_touche_pas_au_pptx_de_reference(projet_assemble, rendu_verifie):
+    """L'allègement d'`exporter_pdf` (cf. LARGEUR_MAX_EXPORT_PX) porte sur une
+    COPIE jetable : le PPTX gardé sous `pptx_id`, celui qu'on republie et que
+    l'utilisateur télécharge, doit être rendu octet pour octet identique —
+    jamais un livrable silencieusement rééchantillonné."""
+    from mcp_server import cache_disque
+    from mcp_server.tools import export as exp
+
+    resultat, _, _ = projet_assemble
+    pptx_id = resultat["pptx_id"]
+    avant = cache_disque.PPTX.recuperer(pptx_id)
+    assert avant is not None
+
+    _, rapport = rendu_verifie
+    exp.exporter_pdf(pptx_id=pptx_id, valide=True,
+                     pptx_sha256_verifie=rapport["pptx_sha256"],
+                     moteur=rapport["moteur"])
+
+    assert cache_disque.PPTX.recuperer(pptx_id) == avant

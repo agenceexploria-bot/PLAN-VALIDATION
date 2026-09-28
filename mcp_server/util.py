@@ -15,10 +15,15 @@ mcp_server/pdf_cache.py, mcp_server/extraction_cache.py) : les fonctions
 """
 import base64
 import binascii
+import io
 import shutil
 import tempfile
+import threading
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
+
+from PIL import Image
 
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -182,6 +187,53 @@ def resoudre_pptx(pptx_base64: str | None, pptx_id: str | None) -> bytes:
     return decoder_base64(pptx_base64, "pptx_base64")
 
 
+# Un seul travail lourd à la fois dans TOUT le process (palier Render :
+# 512 Mo) — extraction, inventaire, rendu de vérification et export PDF
+# confondus, pas seulement les extractions entre elles. Mesuré sur le
+# scénario réel (2 pages A3 300 dpi) : une extraction coûte +90 à +166 Mo de
+# pic, un rendu LibreOffice ~410 Mo de sous-process `soffice`. Deux travaux
+# lourds simultanés dépassent donc le palier (une extraction pendant un rendu
+# ≈ 700 Mo : OOM garanti), alors qu'aucun n'est en cause isolément.
+#
+# `core/extract.py::VERROU_EXTRACTION` ne protège PAS ce chemin : il vit dans
+# `extraire_pdf`, que le serveur MCP n'appelle jamais (les outils appellent
+# `extract.extraire_page` directement). Le verrou ajouté en 5046753 contre ce
+# même OOM était donc contourné ici depuis l'origine.
+#
+# Verrou NON réentrant assumé : aucun outil MCP n'en appelle un autre (ils
+# sont enregistrés à plat dans server.py et communiquent uniquement par
+# identifiants de cache), donc aucune imbrication possible. Si une
+# imbrication était introduite un jour, l'attente bornée ci-dessous la
+# ferait échouer avec un message explicite au lieu de bloquer le process
+# indéfiniment.
+VERROU_TRAVAIL_LOURD = threading.Lock()
+# Bornée, jamais infinie : au-delà, l'appel échoue avec un message lisible
+# par l'agent plutôt que de laisser la requête pendue. Calée sur le délai
+# maximal d'UN travail lourd (le `timeout=120` de la conversion LibreOffice,
+# cf. core/render.py::_convertir_pdf_libreoffice) : de quoi laisser finir le
+# travail en cours, sans accumuler une file d'attente invisible.
+ATTENTE_TRAVAIL_LOURD_S = 120
+
+
+@contextmanager
+def travail_lourd(outil: str):
+    """Sérialise les étapes coûteuses en mémoire (cf. VERROU_TRAVAIL_LOURD).
+    Lève ToolError — jamais une attente indéfinie — si le serveur est resté
+    occupé plus de ATTENTE_TRAVAIL_LOURD_S : l'agent doit pouvoir expliquer
+    l'attente à l'utilisateur et réessayer, pas voir son appel se figer."""
+    if not VERROU_TRAVAIL_LOURD.acquire(timeout=ATTENTE_TRAVAIL_LOURD_S):
+        raise ToolError(
+            f"{outil} : serveur occupé par un autre traitement lourd depuis plus de "
+            f"{ATTENTE_TRAVAIL_LOURD_S} s. Ce n'est pas une erreur dans vos arguments — "
+            "le serveur ne traite qu'un plan à la fois pour tenir dans sa mémoire. "
+            "Prévenez l'utilisateur et relancez le même appel dans quelques instants."
+        )
+    try:
+        yield
+    finally:
+        VERROU_TRAVAIL_LOURD.release()
+
+
 @contextmanager
 def echec_rendu_explicite(outil: str):
     """Entoure l'appel au moteur de rendu (core/render.py) de
@@ -208,6 +260,72 @@ def echec_rendu_explicite(outil: str):
 def encoder_fichier(chemin: Path) -> str:
     """Encode le contenu d'un fichier en base64 (ASCII)."""
     return base64.b64encode(Path(chemin).read_bytes()).decode("ascii")
+
+
+def _reduire_image(donnees: bytes, largeur_max: int) -> bytes:
+    """Ramène une image embarquée à `largeur_max` de large si elle dépasse.
+    Retourne les octets D'ORIGINE si l'image est déjà assez petite, si son
+    format n'est pas réductible sans risque (PowerPoint embarque aussi du
+    .wdp, .emf, .wmf) ou si Pillow ne sait pas la relire. Le format d'origine
+    (PNG/JPEG) est conservé — le type de la partie est déduit de son
+    extension dans [Content_Types].xml, qui n'est pas réécrit ici."""
+    try:
+        with Image.open(io.BytesIO(donnees)) as img:
+            fmt = img.format
+            if fmt not in ("PNG", "JPEG") or img.width <= largeur_max:
+                return donnees
+            hauteur = round(img.height * largeur_max / img.width)
+            if img.mode in ("P", "CMYK"):
+                img = img.convert("RGBA" if fmt == "PNG" else "RGB")
+            reduite = img.resize((largeur_max, hauteur), Image.LANCZOS)
+        try:
+            sortie = io.BytesIO()
+            reduite.save(sortie, format=fmt)
+        finally:
+            reduite.close()
+        return sortie.getvalue()
+    except (OSError, ValueError):
+        return donnees
+
+
+def copie_allegee(source: Path, destination: Path, largeur_max: int) -> Path:
+    """Copie JETABLE de `source`, destinée au seul moteur de rendu, dont les
+    images embarquées sont ramenées à `largeur_max` de large. Tout le reste
+    du PPTX est recopié tel quel : structure, texte et cartouche intacts.
+
+    Ni le PPTX de référence (celui d'`assembler_pptx`, publié au
+    téléchargement et gardé sous `pptx_id`) ni aucun fichier remis à
+    l'utilisateur n'est touché — seule cette copie temporaire, détruite avec
+    le workdir de l'appel, porte les images réduites. Les contrôles
+    programmatiques continuent de porter sur l'original.
+
+    Pourquoi c'est sans effet sur le livrable réel : mesuré sur le scénario
+    de référence, LibreOffice rééchantillonne DÉJÀ lui-même les images à
+    l'export PDF (planche entrée à 4961 px, ressortie à 2584 px en JPEG dans
+    le PDF final). Les pixels au-delà sont payés en RAM dans `soffice` — le
+    poste qui faisait dépasser le palier Render à 512 Mo — puis écartés par
+    LibreOffice au moment d'écrire le PDF.
+
+    Réduit UNE image à la fois : deux planches A3 décompressées simultanément
+    en RAM coûteraient plus cher que ce qu'on cherche à économiser.
+
+    Retourne le chemin À RENDRE : `destination` si l'allègement a abouti,
+    `source` sinon. Un PPTX illisible comme archive (fichier tronqué, contenu
+    qui n'est pas un OOXML) doit produire l'erreur explicite du moteur de
+    rendu, pas un `BadZipFile` opaque venu d'une simple optimisation
+    mémoire — cette économie n'est jamais une raison de faire échouer un
+    rendu qui aurait marché."""
+    try:
+        with zipfile.ZipFile(source) as src, \
+                zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as dst:
+            for item in src.infolist():
+                donnees = src.read(item.filename)
+                if item.filename.startswith("ppt/media/"):
+                    donnees = _reduire_image(donnees, largeur_max)
+                dst.writestr(item, donnees)
+    except (OSError, zipfile.BadZipFile):
+        return source
+    return destination
 
 
 @contextmanager

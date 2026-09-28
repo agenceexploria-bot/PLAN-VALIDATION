@@ -67,53 +67,54 @@ def extraire_page(
     if role not in ROLES_VALIDES:
         raise ValueError(f"role invalide : {role!r} (attendu : {ROLES_VALIDES}).")
 
-    contenu, pdf_id = util.resoudre_pdf(pdf_base64, pdf_id)
-    with util.workdir_temporaire() as wd:
-        pdf_path = wd / "plan_fabricant.pdf"
-        pdf_path.write_bytes(contenu)
+    with util.travail_lourd("extraire_page"):
+        contenu, pdf_id = util.resoudre_pdf(pdf_base64, pdf_id)
+        with util.workdir_temporaire() as wd:
+            pdf_path = wd / "plan_fabricant.pdf"
+            pdf_path.write_bytes(contenu)
 
-        with fitz.open(pdf_path) as doc:
-            if not (1 <= page_num <= len(doc)):
-                raise ValueError(f"page_num {page_num} hors limites (1 à {len(doc)}).")
-            words_data = extract.extraire_page(doc, page_num - 1, wd, dpi=dpi, rediger=(role == "planche"))
+            with fitz.open(pdf_path) as doc:
+                if not (1 <= page_num <= len(doc)):
+                    raise ValueError(f"page_num {page_num} hors limites (1 à {len(doc)}).")
+                words_data = extract.extraire_page(doc, page_num - 1, wd, dpi=dpi, rediger=(role == "planche"))
 
-        reponse = {
-            "page_num": page_num,
-            "pdf_id": pdf_id,
-            "page_size_pts": words_data["page_size_pts"],
-            "words": words_data["words"],
-        }
-        if "survie_nombres" in words_data:
-            reponse["survie_nombres"] = words_data["survie_nombres"]
-        if "redaction_pil_fallback" in words_data:
-            reponse["redaction_pil_fallback"] = words_data["redaction_pil_fallback"]
+            reponse = {
+                "page_num": page_num,
+                "pdf_id": pdf_id,
+                "page_size_pts": words_data["page_size_pts"],
+                "words": words_data["words"],
+            }
+            if "survie_nombres" in words_data:
+                reponse["survie_nombres"] = words_data["survie_nombres"]
+            if "redaction_pil_fallback" in words_data:
+                reponse["redaction_pil_fallback"] = words_data["redaction_pil_fallback"]
 
-        images = {}
-        image_path = wd / f"page_{page_num}_redacted.png"
-        if image_path.exists():
-            if role == "planche":
-                images["planche"] = image_path.read_bytes()
-            publication = fichiers.publier(image_path, image_path.name, "image/png")
-            reponse["image_url"] = publication["url"]
-            reponse["image_sha256"] = publication["sha256"]
+            images = {}
+            image_path = wd / f"page_{page_num}_redacted.png"
+            if image_path.exists():
+                if role == "planche":
+                    images["planche"] = image_path.read_bytes()
+                publication = fichiers.publier(image_path, image_path.name, "image/png")
+                reponse["image_url"] = publication["url"]
+                reponse["image_sha256"] = publication["sha256"]
 
-            # "specs" aussi : un agent réel extrait la page vue 3D + specs
-            # UNE fois, avec l'un ou l'autre rôle (3e test Dust réel).
-            if role in ("garde", "specs"):
-                try:
-                    crop_path = wd / "cover_3d_full.png"
-                    info = cover.extraire_vue_3d(image_path, crop_path, words_data=words_data, dpi=dpi)
-                    images["vue_3d"] = crop_path.read_bytes()
-                    publication_3d = fichiers.publier(crop_path, crop_path.name, "image/png")
-                    reponse["vue_3d_url"] = publication_3d["url"]
-                    reponse["vue_3d_sha256"] = publication_3d["sha256"]
-                    reponse["vue_3d_page_w_pt"] = info["width_pt"]
-                except ValueError as e:
-                    # Pas d'exception bloquante : la vue 3D est optionnelle sur
-                    # la page specs, signalée plutôt qu'un échec brutal de l'outil.
-                    reponse["vue_3d_erreur"] = str(e)
+                # "specs" aussi : un agent réel extrait la page vue 3D + specs
+                # UNE fois, avec l'un ou l'autre rôle (3e test Dust réel).
+                if role in ("garde", "specs"):
+                    try:
+                        crop_path = wd / "cover_3d_full.png"
+                        info = cover.extraire_vue_3d(image_path, crop_path, words_data=words_data, dpi=dpi)
+                        images["vue_3d"] = crop_path.read_bytes()
+                        publication_3d = fichiers.publier(crop_path, crop_path.name, "image/png")
+                        reponse["vue_3d_url"] = publication_3d["url"]
+                        reponse["vue_3d_sha256"] = publication_3d["sha256"]
+                        reponse["vue_3d_page_w_pt"] = info["width_pt"]
+                    except ValueError as e:
+                        # Pas d'exception bloquante : la vue 3D est optionnelle sur
+                        # la page specs, signalée plutôt qu'un échec brutal de l'outil.
+                        reponse["vue_3d_erreur"] = str(e)
 
-        cache = extraction_cache.mettre_en_cache(reponse, images)
-        reponse["extraction_id"] = cache["extraction_id"]
-        reponse["extraction_id_expire_dans_s"] = cache["expire_dans_s"]
-        return reponse
+            cache = extraction_cache.mettre_en_cache(reponse, images)
+            reponse["extraction_id"] = cache["extraction_id"]
+            reponse["extraction_id_expire_dans_s"] = cache["expire_dans_s"]
+            return reponse

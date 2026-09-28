@@ -8,6 +8,21 @@ from core import render, verify
 
 from .. import fichiers, util
 
+# Largeur maximale des images embarquées dans la COPIE du PPTX envoyée au
+# moteur de rendu pour le contrôle visuel — jamais dans le PPTX assemblé ni
+# dans le PDF d'`exporter_pdf`, qui restent à pleine résolution (le livrable
+# contractuel n'est jamais dégradé pour économiser de la mémoire sur un
+# aperçu).
+#
+# Les slides font 11,69 pouces de large (A4 paysage) : 1754 px ≈ 150 dpi
+# effectifs, soit déjà PLUS FIN que le rendu de contrôle lui-même (PDF rendu
+# à Matrix(2.0), ~1684 px pour une slide pleine, cf.
+# core/render.py::_rendre_pngs_libreoffice). Au-delà, ce sont des pixels que
+# l'utilisateur ne verra jamais sur ces images de validation, payés ~177 Mo
+# de RAM dans `soffice` — mesuré sur le scénario réel : 411 Mo de
+# sous-process avec les planches A3 300 dpi (4961 px) embarquées, 234 Mo sans.
+LARGEUR_MAX_APERCU_PX = 1754
+
 
 def verifier_rendu(
     pptx_base64: str = None, words_par_page: dict = None, meta: dict = None, pptx_id: str = None,
@@ -16,6 +31,13 @@ def verifier_rendu(
     PowerPoint/COM, pour rester portable sur ce serveur) : les images
     DOIVENT être montrées à l'utilisateur AVANT toute validation (règle
     absolue n°3). Calcule aussi le rapport de vérification programmatique.
+
+    Ces images de contrôle sont rendues depuis une copie du PPTX dont les
+    images embarquées sont ramenées à ~150 dpi — déjà plus fin que le rendu
+    lui-même, donc sans perte visible à l'écran. Le PPTX assemblé et le PDF
+    d'`exporter_pdf` gardent leur PLEINE résolution : ce qui est validé ici
+    correspond bien au livrable, seule l'empreinte mémoire de l'aperçu est
+    réduite.
 
     Fournissez EXACTEMENT UN des deux : `pptx_id` (chemin NORMAL, retourné
     par `assembler_pptx` — le PPTX reste sur le serveur) ou `pptx_base64`
@@ -65,30 +87,38 @@ def verifier_rendu(
     if words_par_page:
         wpp = {int(n): util.resoudre_entree_words_par_page(v) for n, v in words_par_page.items()}
 
-    contenu = util.resoudre_pptx(pptx_base64, pptx_id)
-    pptx_sha256 = hashlib.sha256(contenu).hexdigest()
+    with util.travail_lourd("verifier_rendu"):
+        contenu = util.resoudre_pptx(pptx_base64, pptx_id)
+        pptx_sha256 = hashlib.sha256(contenu).hexdigest()
 
-    with util.workdir_temporaire() as wd:
-        pptx_path = wd / "plan.pptx"
-        pptx_path.write_bytes(contenu)
+        with util.workdir_temporaire() as wd:
+            pptx_path = wd / "plan.pptx"
+            pptx_path.write_bytes(contenu)
 
-        with util.echec_rendu_explicite("verifier_rendu"):
-            resultat_rendu = render.rendre_pngs(pptx_path, wd / "render")
-        slides = []
-        for p in resultat_rendu["pngs"]:
-            publication = fichiers.publier(p, p.name, "image/png")
-            slides.append({"url": publication["url"], "sha256": publication["sha256"]})
+            # Rendu fait sur une COPIE aux images réduites (cf.
+            # LARGEUR_MAX_APERCU_PX) : le PPTX d'origine, lui, n'est jamais
+            # modifié — c'est lui qui est contrôlé ci-dessous, dont
+            # l'empreinte est renvoyée, et lui qu'`exporter_pdf` reprendra.
+            apercu_path = util.copie_allegee(
+                pptx_path, wd / "apercu.pptx", LARGEUR_MAX_APERCU_PX)
 
-        alertes_completude = verify.controle_completude(pptx_path, meta or {})
+            with util.echec_rendu_explicite("verifier_rendu"):
+                resultat_rendu = render.rendre_pngs(apercu_path, wd / "render")
+            slides = []
+            for p in resultat_rendu["pngs"]:
+                publication = fichiers.publier(p, p.name, "image/png")
+                slides.append({"url": publication["url"], "sha256": publication["sha256"]})
 
-        rapport_cotes = None
-        if wpp is not None:
-            rapport_cotes = verify.controle_cotes(wpp, pptx_path)
+            alertes_completude = verify.controle_completude(pptx_path, meta or {})
 
-        return {
-            "moteur": resultat_rendu["moteur"],
-            "slides": slides,
-            "alertes_completude": alertes_completude,
-            "rapport_cotes": rapport_cotes,
-            "pptx_sha256": pptx_sha256,
-        }
+            rapport_cotes = None
+            if wpp is not None:
+                rapport_cotes = verify.controle_cotes(wpp, pptx_path)
+
+            return {
+                "moteur": resultat_rendu["moteur"],
+                "slides": slides,
+                "alertes_completude": alertes_completude,
+                "rapport_cotes": rapport_cotes,
+                "pptx_sha256": pptx_sha256,
+            }
